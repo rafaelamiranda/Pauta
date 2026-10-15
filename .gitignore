@@ -1,0 +1,16 @@
+# compilação e dependências
+target/
+node_modules/
+
+# segredos: o .env tem o ID e o segredo do Google (use o .env.example)
+.env
+
+# modelos e programas baixados (npm run setup / botão Baixar)
+whisper/
+
+# estado local de ferramentas
+.claude-flow/
+.claude/
+
+# gerado pelo Tauri
+src-tauri/gen/

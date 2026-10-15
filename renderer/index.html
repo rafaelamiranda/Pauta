@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pauta</title>
+<style>
+  :root {
+    --painel: rgba(24, 24, 28, 0.92);
+    --borda: rgba(255, 255, 255, 0.10);
+    --texto: #f2f2f4;
+    --suave: #9a9aa6;
+    --item: rgba(255, 255, 255, 0.06);
+    --destaque: #7c9cff;
+    --marca: rgba(124, 156, 255, 0.28);
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --painel: rgba(250, 250, 252, 0.94);
+      --borda: rgba(0, 0, 0, 0.10);
+      --texto: #1c1c22;
+      --suave: #6b6b78;
+      --item: rgba(0, 0, 0, 0.05);
+      --destaque: #3b5bdb;
+      --marca: rgba(59, 91, 219, 0.20);
+    }
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; background: transparent; overflow: hidden; }
+  body { font: 14px/1.4 "Segoe UI", system-ui, sans-serif; color: var(--texto); padding: 12px; }
+
+  .painel {
+    height: 100%; display: flex; flex-direction: column;
+    background: var(--painel); border: 1px solid var(--borda); border-radius: 16px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(20px);
+  }
+  .topo {
+    display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+    border-bottom: 1px solid var(--borda); -webkit-app-region: drag;
+  }
+  .topo > * { -webkit-app-region: no-drag; }
+  .lupa { color: var(--suave); flex: none; }
+  input {
+    flex: 1; min-width: 0; background: none; border: 0; outline: 0;
+    color: inherit; font: inherit; font-size: 17px;
+  }
+  input::placeholder { color: var(--suave); }
+  kbd {
+    flex: none; font: 11px "Segoe UI", sans-serif; color: var(--suave);
+    border: 1px solid var(--borda); border-radius: 6px; padding: 2px 6px;
+  }
+
+  .lista { flex: 1; overflow-y: auto; padding: 8px; }
+  .item {
+    padding: 10px 12px; border-radius: 10px; cursor: default; outline: 0;
+  }
+  .item:hover, .item:focus-visible { background: var(--item); }
+  .item .linha { display: flex; justify-content: space-between; gap: 12px; }
+  .assunto { font-weight: 600; }
+  .data { color: var(--suave); font-size: 12px; flex: none; }
+  .resumo { color: var(--suave); font-size: 13px; margin-top: 2px; }
+  .trecho { font-size: 13px; margin-top: 4px; color: var(--texto); opacity: 0.85; }
+  mark { background: var(--marca); color: inherit; border-radius: 3px; padding: 0 1px; }
+
+  .vazio { padding: 40px 16px; text-align: center; color: var(--suave); }
+  .mais {
+    display: block; margin: 8px auto; background: var(--item); color: var(--texto);
+    border: 0; border-radius: 8px; padding: 6px 14px; font: inherit; cursor: pointer;
+  }
+  .rodape {
+    display: flex; justify-content: space-between; padding: 8px 16px;
+    border-top: 1px solid var(--borda); color: var(--suave); font-size: 12px;
+  }
+
+  /* abas */
+  .abas { display: flex; gap: 4px; padding: 10px 12px 0; -webkit-app-region: drag; }
+  .abas > * { -webkit-app-region: no-drag; }
+  .aba { background: none; border: 0; color: var(--suave); font: inherit; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+  .aba[aria-selected="true"] { background: var(--item); color: var(--texto); font-weight: 600; }
+  .gravando-ponto { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; margin-right: 6px; }
+  .vista { flex: 1; min-height: 0; display: none; flex-direction: column; }
+  .vista.ativa { display: flex; }
+  .conteudo { flex: 1; overflow-y: auto; padding: 14px 18px; }
+  h2 { font-size: 15px; margin: 14px 0 6px; }
+  h2:first-child { margin-top: 0; }
+  ul { padding-left: 18px; } li { margin: 3px 0; }
+  a.link-externo { color: var(--destaque); cursor: pointer; }
+  .menu-contexto { position: fixed; z-index: 50; min-width: 200px; padding: 4px; background: var(--painel); border: 1px solid var(--borda); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); backdrop-filter: blur(12px); }
+  .menu-contexto button { display: block; width: 100%; padding: 8px 12px; border: 0; border-radius: 6px; background: none; color: var(--texto); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+  .menu-contexto button:hover, .menu-contexto button:focus-visible { background: rgba(255, 90, 90, 0.18); outline: 0; }
+  .nota { color: var(--suave); font-size: 12px; margin-top: 8px; }
+  .botao {
+    background: var(--destaque); color: #fff; border: 0; border-radius: 10px;
+    padding: 9px 18px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  .botao.sec { background: var(--item); color: var(--texto); }
+  .botao.perigo { background: #dc2626; }
+  .botao:disabled { opacity: 0.5; cursor: default; }
+  .acoes { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
+  .fala { margin: 6px 0; }
+  .fala b { color: var(--destaque); margin-right: 6px; }
+  .fala.outros b { color: var(--suave); }
+  .estado { color: var(--suave); }
+  .erro { color: #ef4444; }
+  [hidden] { display: none !important; }
+  label { display: block; margin-top: 12px; font-size: 13px; color: var(--suave); }
+  .conteudo input[type=text], .conteudo input[type=password], .conteudo input[type=email] {
+    width: 100%; margin-top: 4px; padding: 8px 10px; border-radius: 8px; font-size: 14px;
+    border: 1px solid var(--borda); background: var(--item); color: var(--texto);
+  }
+  .conteudo textarea {
+    width: 100%; margin-top: 4px; padding: 8px 10px; border-radius: 8px; font: inherit; resize: vertical;
+    border: 1px solid var(--borda); background: var(--item); color: var(--texto);
+  }
+  .pergunta { display: flex; gap: 8px; margin-top: 6px; }
+  .conteudo .pergunta input[type=text] { flex: 1; width: auto; margin-top: 0; }
+  .resposta { white-space: pre-wrap; margin-top: 8px; padding: 10px 12px; background: var(--item); border-radius: 10px; }
+  .resposta:empty { display: none; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+  .conteudo input[type=checkbox] { margin-right: 6px; }
+  .conteudo select { width: 100%; margin-top: 4px; }
+  .linha-form select { width: auto; flex: 1; min-width: 160px; margin-top: 0; }
+  select {
+    padding: 7px 8px; border-radius: 8px; font: inherit; max-width: 100%;
+    border: 1px solid var(--borda); background: var(--item); color: var(--texto);
+  }
+  select option { color: #1c1c22; }
+  .linha-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+  .linha-form > input[type=text] { flex: 1; min-width: 140px; }
+  .lista-doc { list-style: none; padding: 0; margin: 8px 0 0; }
+  .lista-doc li {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+    padding: 6px 10px; margin: 4px 0; background: var(--item); border-radius: 8px;
+  }
+  .lista-doc .nome { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mini { padding: 4px 10px; font-size: 12px; border-radius: 8px; }
+  .atalhos { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .medidor { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--suave); margin-top: 6px; }
+  .medidor .barra { flex: 1; height: 6px; border-radius: 3px; background: var(--item); overflow: hidden; }
+  .medidor .barra > i { display: block; height: 100%; width: 0; background: var(--destaque); transition: width 0.1s; }
+  .modos { display: grid; gap: 8px; margin-top: 8px; }
+  .modo { display: flex; gap: 10px; align-items: flex-start; margin: 0; padding: 10px 12px; background: var(--item); border: 1px solid transparent; border-radius: 10px; cursor: pointer; color: var(--texto); }
+  .modo:has(input:checked) { border-color: var(--destaque); }
+  .modo:has(input:focus-visible) { outline: 2px solid var(--destaque); outline-offset: 2px; }
+  .modo input { flex: none; margin: 3px 0 0; }
+  .modo-corpo { display: flex; flex-direction: column; gap: 2px; }
+  .modo-corpo span { color: var(--suave); font-size: 12px; }
+  .cartao-modelo { margin: 8px 0; padding: 8px 12px; background: var(--item); border-radius: 10px; }
+  .cartao-modelo p { margin: 2px 0 6px; }
+  progress { flex: 1; min-width: 120px; }
+  .pend { display: flex; gap: 10px; align-items: flex-start; padding: 8px 4px; border-bottom: 1px solid var(--borda); }
+  .pend.feita .texto { text-decoration: line-through; opacity: 0.6; }
+  .pend .texto { flex: 1; }
+  .pend .origem { color: var(--suave); font-size: 12px; }
+  .perigo-texto { color: #ef4444; }
+
+  /* mini player */
+  .player { display: none; height: 100%; align-items: center; gap: 10px; padding: 0 14px;
+    background: var(--painel); border: 1px solid var(--borda); border-radius: 16px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35); backdrop-filter: blur(20px); }
+  body.modo-mini .painel { display: none; }
+  body.modo-mini .player { display: flex; }
+  .player-texto { flex: 1; min-width: 0; font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden; }
+  .player-texto.vazio-p { color: var(--suave); }
+  .player-tempo { font-variant-numeric: tabular-nums; flex: none; }
+  .player .botao { flex: none; padding: 6px 12px; }
+  .icone { flex: none; background: var(--item); color: var(--texto); border: 0; border-radius: 8px;
+    width: 30px; height: 30px; cursor: pointer; display: grid; place-items: center; }
+  .aba-mini { width: 30px; height: 30px; }
+  .aba-fechar { width: 30px; height: 30px; margin-left: 4px; }
+  .aba-fechar:hover { background: #dc2626; color: #fff; }
+  .aba-mini { margin-left: auto; }
+  .fundo-dialogo { position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.45); border-radius: 16px; margin: 12px; z-index: 10; }
+  .fundo-dialogo.aberto { display: flex; }
+  .dialogo { width: min(360px, 90%); padding: 18px; border-radius: 14px; background: var(--painel);
+    border: 1px solid var(--borda); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); }
+  .dialogo h2 { margin: 0 0 6px; }
+  .dialogo .acoes { justify-content: flex-end; }
+  :focus-visible { outline: 2px solid var(--destaque); outline-offset: -2px; }
+  @media (prefers-reduced-motion: no-preference) {
+    .item { transition: background 0.12s; }
+  }
+</style>
+</head>
+<body>
+  <div class="painel">
+    <div class="abas" role="tablist" data-tauri-drag-region>
+      <button class="aba" role="tab" data-vista="conversas" aria-selected="true">Conversas</button>
+      <button class="aba" role="tab" data-vista="reuniao" aria-selected="false" id="aba-reuniao">Reunião</button>
+      <button class="aba" role="tab" data-vista="pendencias" aria-selected="false">Pendências</button>
+      <button class="aba" role="tab" data-vista="ajustes" aria-selected="false">Ajustes</button>
+      <button class="icone aba-mini" id="minimizar" type="button" title="Minimizar para o mini player" aria-label="Minimizar para o mini player"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 19h14"/></svg></button>
+      <button class="icone aba-fechar" id="fechar" type="button" title="Fechar o app" aria-label="Fechar o app"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+
+    <section class="vista ativa" id="v-conversas" role="search">
+      <div class="topo" data-tauri-drag-region>
+        <svg class="lupa" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="q" type="text" placeholder="Buscar nas conversas" autocomplete="off" spellcheck="false" aria-label="Buscar nas conversas">
+        <kbd>Esc</kbd>
+      </div>
+      <div class="lista" id="lista" role="list" aria-live="polite"></div>
+      <div class="conteudo" id="detalhe" hidden></div>
+      <div class="rodape"><span id="contagem"></span><span>Ctrl+Shift+Espaço mostra ou esconde</span></div>
+    </section>
+
+    <section class="vista" id="v-reuniao">
+      <div class="conteudo" id="reuniao-corpo"></div>
+    </section>
+
+    <section class="vista" id="v-pendencias">
+      <div class="conteudo" id="pendencias-corpo"></div>
+    </section>
+
+    <section class="vista" id="v-ajustes">
+      <form class="conteudo" id="form-ajustes" autocomplete="off">
+        <h2>Inteligência artificial</h2>
+        <p class="nota">Escolha onde o app transcreve e resume as reuniões.</p>
+        <div class="modos" role="radiogroup" aria-label="Onde processar a reunião">
+          <label class="modo"><input type="radio" name="modoIA" value="openai"><span class="modo-corpo"><strong>OpenAI (internet)</strong><span>Mais rápido e com melhor qualidade. O áudio e o texto são enviados à OpenAI. Precisa de chave da API.</span></span></label>
+          <label class="modo"><input type="radio" name="modoIA" value="local"><span class="modo-corpo"><strong>No computador</strong><span>Nada sai do seu computador. Exige baixar modelos grandes e é mais lento.</span></span></label>
+          <label class="modo"><input type="radio" name="modoIA" value="misto"><span class="modo-corpo"><strong>Misto</strong><span>Você escolhe por etapa: transcrição e análise.</span></span></label>
+        </div>
+        <p class="estado" id="modo-resumo"></p>
+        <div id="bloco-openai">
+        <h2>OpenAI</h2>
+        <label>Chave da API<input type="password" id="openaiKey" placeholder=""></label>
+        <p class="nota">Não tem uma chave? Crie em <a href="https://platform.openai.com/api-keys" class="link-externo">platform.openai.com/api-keys</a>.</p>
+        <label>Modelo de análise (resumo e perguntas)<select id="openaiModel"></select></label>
+        <p class="nota" id="openaiModel-preco"></p>
+        <label>Modelo de transcrição<select id="transcricaoModel"></select></label>
+        <p class="nota" id="transcricaoModel-preco"></p>
+        <p class="nota">Preços em dólar, de referência: vieram de sites de terceiros, não da página oficial da OpenAI, e mudam. Confira em platform.openai.com/docs/pricing antes de decidir. A estimativa da análise supõe uma reunião de 1 hora com cerca de 15 mil tokens de texto lidos e 1 mil escritos; reuniões maiores custam mais.</p>
+        </div>
+        <h2>E-mail (Gmail)</h2>
+        <label>Seu Gmail (quem envia)<input type="email" id="smtpUser"></label>
+        <label>Senha de app do Gmail<input type="password" id="smtpPass"></label>
+        <p class="nota">Para gerar a senha, acesse <a href="https://myaccount.google.com/apppasswords" class="link-externo">myaccount.google.com/apppasswords</a> (exige verificação em duas etapas).</p>
+        <label>Enviar a transcrição para<input type="email" id="destinatario"></label>
+        <label><input type="checkbox" id="enviarAutomatico">Enviar sozinho ao finalizar a reunião</label>
+        <h2>Áudio e idioma</h2>
+        <label>Microfone<select id="microfone"></select></label>
+        <label>Saída de áudio (som do computador)<select id="saida"></select></label>
+        <label>Idioma da reunião (código, como pt, en, es)<input type="text" id="idioma" maxlength="5"></label>
+        <h2>Google Drive</h2>
+        <p class="nota" id="drive-ajuda">Para anexar documentos do Drive, crie um ID de cliente do tipo "App para computador" no Google Cloud (APIs e serviços, Credenciais), ative a API do Google Drive e cole os dois valores abaixo. Veja o passo a passo no README.</p>
+        <label>ID do cliente<input type="text" id="driveClientId"></label>
+        <label>Segredo do cliente<input type="password" id="driveClientSecret"></label>
+        <div class="acoes"><span id="drive-estado" class="estado"></span><button class="botao sec" type="button" id="drive-botao"></button></div>
+        <div id="bloco-locais">
+        <h2>Modelos no computador</h2>
+        <div id="locais-corpo"></div>
+        </div>
+        <h2>Privacidade</h2>
+        <label>Apagar sozinho reuniões com mais de (dias, 0 = nunca)<input type="text" id="apagarAposDias" inputmode="numeric"></label>
+        <div class="acoes">
+          <button class="botao sec" type="button" id="backup">Salvar cópia do banco em Downloads</button>
+          <button class="botao sec" type="button" id="apagar-antigas">Apagar reuniões antigas agora</button>
+          <button class="botao perigo" type="button" id="apagar-tudo">Apagar todas as conversas</button>
+        </div>
+        <p class="estado" id="dados-estado"></p>
+        <div class="acoes"><button class="botao" type="submit">Salvar</button><span id="ajustes-estado" class="estado"></span></div>
+        <p class="nota">Chave e senha ficam criptografadas neste computador. Para o Gmail, crie uma senha de app em myaccount.google.com/apppasswords (exige verificação em duas etapas).</p>
+      </form>
+    </section>
+  </div>
+  <div class="fundo-dialogo" id="dialogo-fechar" role="alertdialog" aria-modal="true" aria-labelledby="dialogo-titulo" aria-describedby="dialogo-msg">
+    <div class="dialogo">
+      <h2 id="dialogo-titulo">Fechar a Pauta?</h2>
+      <p class="estado" id="dialogo-msg">O app será encerrado e o atalho Ctrl+Shift+Espaço deixa de funcionar até você abri-lo de novo.</p>
+      <div class="acoes">
+        <button class="botao sec" type="button" id="dialogo-cancelar">Cancelar</button>
+        <button class="botao perigo" type="button" id="dialogo-confirmar">Fechar o app</button>
+      </div>
+    </div>
+  </div>
+  <div class="player" id="player" data-tauri-drag-region>
+    <span class="gravando-ponto" id="player-ponto" hidden></span>
+    <strong class="player-tempo" id="player-tempo" hidden>00:00:00</strong>
+    <span class="player-texto vazio-p" id="player-texto" data-tauri-drag-region aria-live="polite">Nenhuma reunião em andamento</span>
+    <button class="botao perigo" id="player-parar" type="button" hidden>Parar</button>
+    <button class="icone" id="player-expandir" type="button" title="Voltar ao tamanho normal" aria-label="Voltar ao tamanho normal"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
+  </div>
+  <script src="bridge.js"></script>
+  <script src="busca.js"></script>
+  <script src="ajustes.js"></script>
+  <script src="locais.js"></script>
+  <script src="mini.js"></script>
+  <script src="reuniao.js"></script>
+  <script src="pendencias.js"></script>
+  <script src="fechar.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+[package]
+name = "pauta"
+version = "0.1.0"
+edition = "2021"
+description = "Janela que sobrepõe a tela: busca de conversas e transcrição de reuniões"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+busca_core = { path = "../core" }
+anyhow = "1"
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+
+[target.'cfg(windows)'.dependencies]
+cpal = "0.15"
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio = { version = "1", features = ["signal", "macros"] }

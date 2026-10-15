@@ -1,0 +1,10 @@
+{
+  "bundle": {
+    "targets": ["deb", "rpm", "appimage"],
+    "icon": ["icons/icon.png"],
+    "linux": {
+      "deb": { "depends": ["pulseaudio-utils", "libsecret-tools"] },
+      "rpm": { "depends": ["pulseaudio-utils", "libsecret"] }
+    }
+  }
+}
