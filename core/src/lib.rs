@@ -5,6 +5,7 @@ pub mod baixar;
 pub mod captura_pulse;
 pub mod drive;
 pub mod exportar;
+pub mod falantes;
 pub mod locais;
 pub mod mail;
 pub mod material;

@@ -268,6 +268,10 @@
         <label>Microfone<select id="microfone"></select></label>
         <label>Saída de áudio (som do computador)<select id="saida"></select></label>
         <label>Idioma da reunião (código, como pt, en, es)<input type="text" id="idioma" maxlength="5"></label>
+        <label><input type="checkbox" id="dicaTermos">Usar nomes e siglas do material como dica na transcrição</label>
+        <p class="nota">Ajuda a transcrever nomes próprios e siglas do material de apoio. Se notar frases estranhas na transcrição, desligue.</p>
+        <label><input type="checkbox" id="identificarFalantes">Separar as pessoas em "Outros" (Pessoa 1, Pessoa 2...)</label>
+        <p class="nota">Só com a transcrição da OpenAI (não vale na transcrição local). Usa um modelo próprio, mais caro, só no som do computador. Reconhece até 4 vozes e pode errar quando duas pessoas se parecem.</p>
         <h2>Google Drive</h2>
         <p class="nota" id="drive-ajuda">Para anexar documentos do Drive, crie um ID de cliente do tipo "App para computador" no Google Cloud (APIs e serviços, Credenciais), ative a API do Google Drive e cole os dois valores abaixo. Veja o passo a passo no README.</p>
         <label>ID do cliente<input type="text" id="driveClientId"></label>

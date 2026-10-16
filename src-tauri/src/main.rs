@@ -5,6 +5,7 @@ mod segredos;
 
 use busca_core::drive::{ArquivoDrive, Drive};
 use busca_core::exportar;
+use busca_core::falantes::DiarizadorOpenAi;
 use busca_core::mail::SmtpGmail;
 use busca_core::locais::Locais;
 use busca_core::material::{extrair_texto, Documento};
@@ -369,8 +370,14 @@ async fn drive_anexar(estado: State<'_, Estado>, id: String) -> Result<Value, St
 // ---- perguntas ----
 
 #[tauri::command]
-async fn perguntar(estado: State<'_, Estado>, pergunta: String, id: Option<String>) -> Result<Value, String> {
-    Ok(match estado.reuniao.perguntar(&pergunta, id.as_deref()).await {
+async fn perguntar(app: tauri::AppHandle, estado: State<'_, Estado>, pergunta: String, id: Option<String>, pedido: Option<String>) -> Result<Value, String> {
+    // com `pedido`, a resposta vai aparecendo na tela (evento pergunta:parcial) enquanto é escrita
+    let parcial = move |texto: &str| {
+        if let Some(p) = &pedido {
+            let _ = app.emit("pergunta:parcial", json!({ "pedido": p, "texto": texto }));
+        }
+    };
+    Ok(match estado.reuniao.perguntar_parcial(&pergunta, id.as_deref(), &parcial).await {
         Ok(resposta) => json!({ "ok": true, "resposta": resposta }),
         Err(e) => json!({ "ok": false, "erro": e.to_string() }),
     })
@@ -709,6 +716,7 @@ fn main() {
                 agora: Arc::new(busca_core::agora_ms),
                 remetente: Arc::new(SmtpGmail),
             }));
+            let cfg_chave = config.clone();
             let reuniao = Arc::new(Reuniao::new(Dependencias {
                 store: store.clone(),
                 usuario: USUARIO.into(),
@@ -718,6 +726,7 @@ fn main() {
                 config: ler_config,
                 emitir,
                 agora: Arc::new(busca_core::agora_ms),
+                diarizador: Some(Arc::new(DiarizadorOpenAi::new(Arc::new(move || cfg_chave.obter().openai_key)))),
             }));
             let drive = Arc::new(Drive::new(
                 config.segredos(),

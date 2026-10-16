@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS messages (
   session_id TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
   content TEXT NOT NULL,
-  speaker TEXT CHECK(speaker IN ('ME', 'THEY')),
+  speaker TEXT CHECK(speaker IS NULL OR speaker IN ('ME', 'THEY') OR speaker LIKE 'THEY:%'),
   timestamp INTEGER NOT NULL,
   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );

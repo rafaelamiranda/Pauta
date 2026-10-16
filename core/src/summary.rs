@@ -36,7 +36,7 @@ Regras:
 4. Preserve nomes, números, datas, prazos e termos técnicos como foram ditos.
 5. Em pendências, só indique responsável e prazo se foram ditos. Caso contrário, use null.
 6. Se a reunião não teve pendências, devolva a lista vazia. Não crie pendências para preencher.
-7. \"Eu\" é quem usa o aplicativo. \"Outros\" são os demais participantes, sem distinção entre eles.";
+7. \"Eu\" é quem usa o aplicativo. \"Outros\" são os demais participantes, sem distinção entre eles. Quando aparecerem \"Pessoa 1\", \"Pessoa 2\" e assim por diante, são vozes diferentes entre os outros participantes, separadas por reconhecimento de voz (pode errar). Não invente nomes reais para elas.";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Resumo {
@@ -53,6 +53,10 @@ pub trait Resumidor: Send + Sync {
     async fn resumir(&self, transcricao: &str, material: &str, chave: &str, modelo: &str) -> Result<Resumo>;
     /// Responde uma pergunta usando só o material e a transcrição.
     async fn responder(&self, pergunta: &str, material: &str, transcricao: &str, chave: &str, modelo: &str) -> Result<String>;
+    /// Como `responder`, mas chama `parcial` com o texto já escrito enquanto a resposta chega.
+    async fn responder_parcial(&self, pergunta: &str, material: &str, transcricao: &str, chave: &str, modelo: &str, _parcial: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String> {
+        self.responder(pergunta, material, transcricao, chave, modelo).await
+    }
     /// Traduz um trecho falado. `origem` e `destino` são nomes de idioma ("inglês", "português").
     async fn traduzir(&self, _texto: &str, _origem: &str, _destino: &str, _chave: &str, _modelo: &str) -> Result<String> {
         Err(anyhow!("Tradução não disponível."))
@@ -105,12 +109,21 @@ fn hms(ms: i64, base: i64) -> String {
     format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
+/// Nome mostrado para quem falou: "ME" é "Eu"; "THEY:Pessoa 2" é "Pessoa 2"; o resto é "Outros".
+pub fn rotulo_falante(falante: Option<&str>) -> String {
+    match falante {
+        Some("ME") => "Eu".into(),
+        Some(f) if f.starts_with("THEY:") && f.len() > 5 => f[5..].to_string(),
+        _ => "Outros".into(),
+    }
+}
+
 /// Texto da transcrição: "[00:01:05] Eu: ...".
 pub fn formatar_transcricao(falas: &[FalaGravada]) -> String {
     let Some(base) = falas.first().map(|f| f.timestamp) else { return String::new() };
     falas
         .iter()
-        .map(|f| format!("[{}] {}: {}", hms(f.timestamp, base), if f.speaker.as_deref() == Some("ME") { "Eu" } else { "Outros" }, f.text))
+        .map(|f| format!("[{}] {}: {}", hms(f.timestamp, base), rotulo_falante(f.speaker.as_deref()), f.text))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -149,6 +162,61 @@ impl OpenAi {
 
     fn nome(&self) -> &'static str {
         if self.exige_chave { "OpenAI" } else { "O modelo local" }
+    }
+
+    /// Valida e monta o pedido de uma pergunta (usado pela resposta inteira e pela resposta em fluxo).
+    fn corpo_pergunta(&self, pergunta: &str, material: &str, transcricao: &str, chave: &str, modelo: &str) -> Result<serde_json::Value> {
+        if chave.is_empty() && self.exige_chave {
+            return Err(anyhow!("Chave da OpenAI não configurada."));
+        }
+        if pergunta.trim().is_empty() {
+            return Err(anyhow!("Escreva uma pergunta."));
+        }
+        if material.len() + transcricao.len() > self.limite_pergunta {
+            return Err(anyhow!("O material e a transcrição juntos são grandes demais. Reduza o material colado."));
+        }
+        Ok(json!({
+            "model": modelo,
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": INSTRUCOES_PERGUNTA},
+                {"role": "user", "content": format!(
+                    "MATERIAL:\n{}\n\nTRANSCRIÇÃO:\n{}\n\nPERGUNTA:\n{}",
+                    if material.trim().is_empty() { "(nenhum)" } else { material },
+                    if transcricao.trim().is_empty() { "(ainda sem falas)" } else { transcricao },
+                    pergunta.trim()
+                )}
+            ]
+        }))
+    }
+
+    /// Envia um pedido com `"stream": true` e lê o fluxo de eventos ("data: {...}" por linha),
+    /// chamando `parcial` com o texto acumulado a cada pedaço.
+    async fn fluxo(&self, corpo: &serde_json::Value, chave: &str, parcial: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String> {
+        let mut res = self.pedido(corpo, chave).send().await?;
+        let status = res.status();
+        if !status.is_success() {
+            let json: serde_json::Value = res.json().await.unwrap_or_default();
+            let msg = json["error"]["message"].as_str().unwrap_or("erro desconhecido");
+            return Err(anyhow!("{} respondeu {}: {msg}", self.nome(), status.as_u16()));
+        }
+        let (mut pendente, mut acumulado) = (String::new(), String::new());
+        while let Some(pedaco) = res.chunk().await? {
+            pendente.push_str(&String::from_utf8_lossy(&pedaco));
+            while let Some(fim) = pendente.find('\n') {
+                let linha: String = pendente.drain(..=fim).collect();
+                let Some(dados) = linha.trim().strip_prefix("data:") else { continue };
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(dados.trim()) else { continue };
+                if let Some(c) = v["choices"][0]["delta"]["content"].as_str() {
+                    acumulado.push_str(c);
+                    parcial(acumulado.trim_start());
+                }
+            }
+        }
+        match acumulado.trim() {
+            "" => Err(anyhow!("{} não devolveu resposta.", self.nome())),
+            t => Ok(t.to_string()),
+        }
     }
 }
 
@@ -196,29 +264,14 @@ impl Resumidor for OpenAi {
         }
     }
 
+    async fn responder_parcial(&self, pergunta: &str, material: &str, transcricao: &str, chave: &str, modelo: &str, parcial: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String> {
+        let mut corpo = self.corpo_pergunta(pergunta, material, transcricao, chave, modelo)?;
+        corpo["stream"] = json!(true);
+        self.fluxo(&corpo, chave, parcial).await
+    }
+
     async fn responder(&self, pergunta: &str, material: &str, transcricao: &str, chave: &str, modelo: &str) -> Result<String> {
-        if chave.is_empty() && self.exige_chave {
-            return Err(anyhow!("Chave da OpenAI não configurada."));
-        }
-        if pergunta.trim().is_empty() {
-            return Err(anyhow!("Escreva uma pergunta."));
-        }
-        if material.len() + transcricao.len() > self.limite_pergunta {
-            return Err(anyhow!("O material e a transcrição juntos são grandes demais. Reduza o material colado."));
-        }
-        let corpo = json!({
-            "model": modelo,
-            "temperature": 0.2,
-            "messages": [
-                {"role": "system", "content": INSTRUCOES_PERGUNTA},
-                {"role": "user", "content": format!(
-                    "MATERIAL:\n{}\n\nTRANSCRIÇÃO:\n{}\n\nPERGUNTA:\n{}",
-                    if material.trim().is_empty() { "(nenhum)" } else { material },
-                    if transcricao.trim().is_empty() { "(ainda sem falas)" } else { transcricao },
-                    pergunta.trim()
-                )}
-            ]
-        });
+        let corpo = self.corpo_pergunta(pergunta, material, transcricao, chave, modelo)?;
         let res = self.pedido(&corpo, chave).send().await?;
         let status = res.status();
         let json: serde_json::Value = res.json().await.unwrap_or_default();
@@ -246,31 +299,7 @@ impl Resumidor for OpenAi {
                 {"role": "user", "content": texto}
             ]
         });
-        let mut res = self.pedido(&corpo, chave).send().await?;
-        let status = res.status();
-        if !status.is_success() {
-            let json: serde_json::Value = res.json().await.unwrap_or_default();
-            let msg = json["error"]["message"].as_str().unwrap_or("erro desconhecido");
-            return Err(anyhow!("{} respondeu {}: {msg}", self.nome(), status.as_u16()));
-        }
-        // fluxo de eventos ("data: {...}" por linha): junta os pedaços e avisa a cada um
-        let (mut pendente, mut texto_final) = (String::new(), String::new());
-        while let Some(pedaco) = res.chunk().await? {
-            pendente.push_str(&String::from_utf8_lossy(&pedaco));
-            while let Some(fim) = pendente.find('\n') {
-                let linha: String = pendente.drain(..=fim).collect();
-                let Some(dados) = linha.trim().strip_prefix("data:") else { continue };
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(dados.trim()) else { continue };
-                if let Some(c) = v["choices"][0]["delta"]["content"].as_str() {
-                    texto_final.push_str(c);
-                    parcial(texto_final.trim_start());
-                }
-            }
-        }
-        match texto_final.trim() {
-            "" => Err(anyhow!("{} não devolveu a tradução.", self.nome())),
-            t => Ok(t.to_string()),
-        }
+        self.fluxo(&corpo, chave, parcial).await
     }
 
     async fn traduzir(&self, texto: &str, origem: &str, destino: &str, chave: &str, modelo: &str) -> Result<String> {
@@ -359,6 +388,34 @@ mod testes {
         let p = pedidos.lock().unwrap()[0].clone();
         assert!(p.contains("de inglês para português") && p.contains("Good morning"), "{p}");
         assert!(OpenAi::com_url("http://127.0.0.1:1").traduzir("x", "a", "b", "", "m").await.unwrap_err().to_string().contains("Chave"));
+    }
+
+    #[tokio::test]
+    async fn resposta_em_fluxo_mostra_aos_poucos_e_valida_como_a_inteira() {
+        let corpo = "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"O prazo\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\" é sexta.\"}}]}\n\ndata: [DONE]\n\n";
+        let (url, pedidos) = servidor_falso(200, corpo).await;
+        let o = OpenAi::com_url(url);
+        let vistos = std::sync::Mutex::new(vec![]);
+        let r = o.responder_parcial("Qual o prazo?", "Prazo: sexta", "", "sk-1", "m", &|t| vistos.lock().unwrap().push(t.to_string())).await.unwrap();
+        assert_eq!(r, "O prazo é sexta.");
+        assert_eq!(*vistos.lock().unwrap(), vec!["", "O prazo", "O prazo é sexta."]);
+        let p = pedidos.lock().unwrap()[0].clone();
+        assert!(p.contains("\"stream\":true") && p.contains("Qual o prazo?"));
+
+        let nada = |_: &str| {};
+        assert!(o.responder_parcial(" ", "", "", "k", "m", &nada).await.unwrap_err().to_string().contains("pergunta"));
+        assert!(o.responder_parcial("a?", "", "", "", "m", &nada).await.unwrap_err().to_string().contains("Chave"));
+        let (url, _) = servidor_falso(401, r#"{"error":{"message":"chave inválida"}}"#).await;
+        let e = OpenAi::com_url(url).responder_parcial("a?", "", "", "k", "m", &nada).await.unwrap_err().to_string();
+        assert!(e.contains("401") && e.contains("chave inválida"), "{e}");
+    }
+
+    #[test]
+    fn rotulos_de_quem_falou() {
+        assert_eq!(rotulo_falante(Some("ME")), "Eu");
+        assert_eq!(rotulo_falante(Some("THEY")), "Outros");
+        assert_eq!(rotulo_falante(Some("THEY:Pessoa 2")), "Pessoa 2");
+        assert_eq!(rotulo_falante(None), "Outros");
     }
 
     #[tokio::test]

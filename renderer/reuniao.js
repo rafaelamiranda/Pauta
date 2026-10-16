@@ -2,7 +2,7 @@
 
 // Aba "Reunião": material de apoio, captura do áudio, transcrição ao vivo e resumo no final.
 (() => {
-  const { el, renderResumo, caixaPergunta, confirmarDuplo } = window.UI;
+  const { el, renderResumo, caixaPergunta, confirmarDuplo, rotulo } = window.UI;
   const corpo = document.getElementById('reuniao-corpo');
   const abaReuniao = document.getElementById('aba-reuniao');
   const LIMITE_ARQUIVO = 25 * 1024 * 1024;
@@ -339,7 +339,7 @@
   window.busca.aoFalar(({ speaker, text }) => {
     if (!ao_vivo) return;
     const p = el('div', speaker === 'ME' ? 'fala' : 'fala outros');
-    p.append(el('b', null, speaker === 'ME' ? 'Eu' : 'Outros'), text);
+    p.append(el('b', null, rotulo(speaker)), text);
     ao_vivo.append(p);
     corpo.scrollTop = corpo.scrollHeight;
   });

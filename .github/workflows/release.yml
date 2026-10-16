@@ -3,6 +3,7 @@ name: Release
 # Ao publicar uma tag (ex.: git tag v0.2.0 && git push origin v0.2.0), gera o instalador do Windows (.exe)
 # e o pacote do Linux (.deb) e os anexa a uma Release. Em "Run workflow" (manual) só gera os arquivos,
 # que ficam para baixar na página da execução, sem criar Release.
+# O texto da Release vem da mensagem da tag: git tag -a v0.3.0 -F notas.md && git push origin v0.3.0.
 on:
   push:
     tags: ['v*']
@@ -64,6 +65,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           path: arquivos
@@ -71,4 +75,9 @@ jobs:
       - name: Criar a Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" arquivos/* --repo "$GITHUB_REPOSITORY" --title "Pauta $GITHUB_REF_NAME" --generate-notes
+        run: |
+          # O texto da Release é a mensagem da tag (git tag -a v1.2.3 -m "..."). Sem mensagem, usa o texto automático.
+          git fetch --force --tags
+          git tag -l "$GITHUB_REF_NAME" --format='%(contents)' > notas.md
+          if [ -s notas.md ]; then NOTAS="--notes-file notas.md"; else NOTAS="--generate-notes"; fi
+          gh release create "$GITHUB_REF_NAME" arquivos/* --repo "$GITHUB_REPOSITORY" --title "Pauta $GITHUB_REF_NAME" $NOTAS

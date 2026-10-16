@@ -18,7 +18,8 @@ O projeto nasceu de um estudo de como apps desse tipo fazem busca, transcrição
 | Janela e atalho | Tauri 2 (Rust). Transparente, sem borda, sempre por cima. `Ctrl+Shift+Espaço` mostra ou esconde. |
 | Captura de áudio | Windows: `cpal`, com loopback do WASAPI. Linux: `parec` (PulseAudio ou PipeWire), com o monitor da saída. Microfone ("Eu") e som do computador ("Outros"). |
 | Divisão em falas | Detector de voz por volume (RMS). Fecha a fala após 700 ms de silêncio. |
-| Transcrição | OpenAI `gpt-4o-transcribe`, ou whisper.cpp no próprio computador (opcional). |
+| Transcrição | OpenAI `gpt-4o-transcribe`, ou whisper.cpp no próprio computador (opcional). Nomes e siglas do material vão como dica ao transcritor. |
+| Identificação de falantes | Opcional, só com a OpenAI: `gpt-4o-transcribe-diarize` separa as pessoas no som do computador. |
 | Resumo, pendências e perguntas | OpenAI `gpt-4o-mini`, ou llama.cpp no próprio computador (opcional). |
 | Busca | SQLite FTS5. Ignora acento e maiúscula, aceita início de palavra. |
 | Google Drive | API do Drive, somente leitura. Login pelo navegador (OAuth com PKCE). |
@@ -32,7 +33,9 @@ Os dois modelos, o idioma, o microfone e a saída de áudio podem ser trocados n
 
 - **Bandeja do Windows:** o app tem um ícone ao lado do relógio. Clique para mostrar ou esconder a janela. Clique com o botão direito e escolha **Sair da Pauta** para fechar. Com reunião em andamento, o app não fecha: finalize antes.
 - **Reunião:** transcrição ao vivo com medidor de volume do microfone e do som do computador. `Ctrl+Shift+R` inicia e finaliza a reunião mesmo com a janela escondida.
-- **Perguntas:** caixa de pergunta, botão "O que respondo?" (fala pronta em primeira pessoa) e, durante a reunião, "O que eu perdi?" (últimos 5 minutos). Botão para copiar a resposta.
+- **Perguntas:** caixa de pergunta, botão "O que respondo?" (fala pronta em primeira pessoa) e, durante a reunião, "O que eu perdi?" (últimos 5 minutos). A resposta aparece aos poucos, enquanto é escrita. Botão para copiar a resposta.
+- **Dica de termos:** o app tira do material de apoio (texto colado e documentos) os nomes próprios, siglas e códigos, os mais repetidos primeiro, e os envia como dica ao transcritor (até 300 caracteres), para errar menos esses nomes. A lista é refeita quando o material muda durante a reunião. Nos Ajustes dá para desligar, caso o modelo comece a repetir a dica no lugar da fala (o app descarta esse tipo de resposta). Funciona na OpenAI e no Whisper local.
+- **Identificação de falantes (opcional):** nos Ajustes, "Separar as pessoas em Outros". No som do computador, cada trecho vai para o modelo `gpt-4o-transcribe-diarize`, e as vozes aparecem como "Pessoa 1", "Pessoa 2" (até 4). Para manter o mesmo nome entre um trecho e outro, o app guarda de 2 a 10 segundos da voz de cada pessoa e envia como referência nos trechos seguintes. Isso põe os trechos do som do computador numa fila, então a transcrição pode atrasar mais. Se a pessoa falou menos de 2 segundos, ou já são 4 vozes, o texto fica como "Outros". O resumo e o e-mail usam esses nomes. Não vale na transcrição local, e o microfone continua sendo "Eu".
 - **Material de apoio:** texto colado, documentos anexados (arquivo do computador ou Google Drive) e materiais salvos por cliente ou projeto, para reutilizar sem colar de novo.
 - **Pendências:** aba com as pendências de todas as reuniões, com marcar como feita.
 - **Conversas:** copiar ou salvar em Markdown (pasta Downloads), apagar uma conversa, apagar tudo, apagar sozinho reuniões com mais de N dias, e salvar uma cópia do banco.
@@ -175,14 +178,6 @@ Roda os testes do `core` (busca, falas, resumo, e-mail, reunião de ponta a pont
 
 As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, não medida.
 
-### Mais valor por reunião
-
-| Ideia | Para que serve | Esforço |
-|---|---|---|
-| Dica de termos na transcrição | Mandar nomes e siglas do material como dica ao transcritor, para errar menos nomes próprios. Precisa testar para não atrapalhar. | Baixo |
-| Resposta aparecendo aos poucos | Mostrar a resposta enquanto ela é gerada, em vez de esperar tudo. | Médio |
-| Identificação de falantes | Separar cada participante em "Outros". Os modelos de transcrição da OpenAI mudam com frequência, então confira a documentação atual antes. | Médio |
-
 ### Material de apoio
 
 | Ideia | Para que serve | Esforço |
@@ -227,16 +222,16 @@ As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, 
 
 ### Por onde começar
 
-Já feitos: apagar conversas, exportar e copiar, escolher o microfone com medidor de volume, materiais salvos por cliente ou projeto, lista geral de pendências, anexar documentos (arquivo e Google Drive), transcrição local e análise local com botão de download.
+Já feitos: apagar conversas, exportar e copiar, escolher o microfone com medidor de volume, materiais salvos por cliente ou projeto, lista geral de pendências, anexar documentos (arquivo e Google Drive), transcrição local e análise local com botão de download, dica de termos na transcrição, resposta aparecendo aos poucos e identificação de falantes.
 
 O que falta, nesta ordem:
 
-1. Dica de termos na transcrição e resposta aparecendo aos poucos.
-2. Busca por significado.
+1. Busca por significado.
 
 ## Limitações conhecidas
 
 - Sem fone de ouvido, o microfone pode captar o som dos alto-falantes e repetir falas de "Outros" como "Eu".
+- Identificação de falantes: foi testada só com serviços simulados, não com a API real da OpenAI nem com uma reunião de verdade. Não funciona na transcrição local, o limite é de 4 vozes e duas pessoas com voz parecida podem ser confundidas. A dica de termos também não foi comparada com e sem, em áudio real.
 - Windows e Linux. O macOS não é suportado.
 - No Linux, os atalhos globais e a janela por cima de tudo dependem do X11/gerenciador de janelas (veja "Rodar no Linux").
 - A transcrição por fala depende de internet e da cota da conta OpenAI.

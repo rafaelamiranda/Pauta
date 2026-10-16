@@ -12,6 +12,15 @@ pub trait Transcritor: Send + Sync {
     async fn transcrever_em(&self, pcm: &[i16], _idioma: &str) -> Result<String> {
         self.transcrever(pcm).await
     }
+    /// Como `transcrever_em`, com uma dica de nomes e siglas para o modelo acertar a grafia.
+    async fn transcrever_dica(&self, pcm: &[i16], idioma: &str, _dica: &str) -> Result<String> {
+        self.transcrever_em(pcm, idioma).await
+    }
+}
+
+/// Descarta a resposta quando o modelo só repetiu a dica de volta (acontece com ruído ou silêncio).
+pub fn sem_eco(texto: String, dica: &str) -> String {
+    if !dica.is_empty() && texto.to_lowercase().contains(&crate::material::DICA_ROTULO.to_lowercase()) { String::new() } else { texto }
 }
 
 /// O whisper costuma "inventar" marcações como "[BLANK_AUDIO]" ou "(música)" ao ouvir só ruído.
@@ -50,13 +59,20 @@ impl Transcritor for ClienteWhisper {
     }
 
     async fn transcrever_em(&self, pcm: &[i16], idioma: &str) -> Result<String> {
+        self.transcrever_dica(pcm, idioma, "").await
+    }
+
+    async fn transcrever_dica(&self, pcm: &[i16], idioma: &str, dica: &str) -> Result<String> {
         let _vez = self.fila.lock().await;
         let arquivo = reqwest::multipart::Part::bytes(pcm16_para_wav(pcm, TAXA)).file_name("fala.wav").mime_str("audio/wav")?;
-        let form = reqwest::multipart::Form::new()
+        let mut form = reqwest::multipart::Form::new()
             .part("file", arquivo)
             .text("response_format", "json")
             .text("temperature", "0.0")
             .text("language", idioma.to_string());
+        if !dica.is_empty() {
+            form = form.text("prompt", dica.to_string());
+        }
         let res = self.http.post(format!("{}/inference", self.url_base)).multipart(form).send().await?;
         if !res.status().is_success() {
             return Err(anyhow!("whisper-server respondeu {}", res.status().as_u16()));
@@ -69,6 +85,14 @@ impl Transcritor for ClienteWhisper {
 #[cfg(test)]
 pub mod testes {
     use super::*;
+
+    #[test]
+    fn eco_da_dica_e_descartado() {
+        let dica = "Nomes e termos desta reunião: Alfa.";
+        assert_eq!(sem_eco("Nomes e termos desta reunião: Alfa.".into(), dica), "");
+        assert_eq!(sem_eco("Vamos falar da Alfa".into(), dica), "Vamos falar da Alfa");
+        assert_eq!(sem_eco("Nomes e termos desta reunião".into(), ""), "Nomes e termos desta reunião");
+    }
 
     #[test]
     fn filtra_ruido() {
@@ -122,6 +146,17 @@ pub mod testes {
         let p = pedidos.lock().unwrap()[0].clone();
         assert!(p.starts_with("POST /inference"));
         assert!(p.contains("name=\"language\"") && p.contains("pt"));
+    }
+
+    #[tokio::test]
+    async fn dica_vai_como_prompt_so_quando_existe() {
+        let (url, pedidos) = servidor_falso(200, r#"{"text":"ok"}"#).await;
+        let c = ClienteWhisper::new(url, "pt");
+        c.transcrever_dica(&[0i16; 160], "pt", "Nomes e termos desta reunião: Alfa.").await.unwrap();
+        c.transcrever_dica(&[0i16; 160], "pt", "").await.unwrap();
+        let p = pedidos.lock().unwrap().clone();
+        assert!(p[0].contains("name=\"prompt\"") && p[0].contains("Alfa"));
+        assert!(!p[1].contains("name=\"prompt\""));
     }
 
     #[tokio::test]

@@ -63,7 +63,7 @@
 
   window.busca.aoFalar(({ speaker, text }) => {
     if (!text?.trim()) return;
-    mostrarTexto(`${speaker === 'ME' ? 'Eu' : 'Outros'}: ${text.trim()}`, false);
+    mostrarTexto(`${window.UI.rotulo(speaker)}: ${text.trim()}`, false);
   });
 
   parar.addEventListener('click', () => window.Reuniao.finalizar());

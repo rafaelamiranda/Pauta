@@ -44,11 +44,14 @@ impl TranscricaoOpenAi {
         self
     }
 
-    async fn enviar(&self, wav: &[u8], chave: &str, modelo: &str, idioma: &str) -> Result<reqwest::Response> {
+    async fn enviar(&self, wav: &[u8], chave: &str, modelo: &str, idioma: &str, dica: &str) -> Result<reqwest::Response> {
         let arquivo = reqwest::multipart::Part::bytes(wav.to_vec()).file_name("fala.wav").mime_str("audio/wav")?;
         let mut form = reqwest::multipart::Form::new().part("file", arquivo).text("model", modelo.to_string()).text("response_format", "json");
         if !idioma.is_empty() && idioma != "auto" {
             form = form.text("language", idioma.to_string());
+        }
+        if !dica.is_empty() {
+            form = form.text("prompt", dica.to_string());
         }
         Ok(self.http.post(format!("{}/audio/transcriptions", self.url_base)).bearer_auth(chave).multipart(form).send().await?)
     }
@@ -62,16 +65,20 @@ impl Transcritor for TranscricaoOpenAi {
     }
 
     async fn transcrever_em(&self, pcm: &[i16], idioma: &str) -> Result<String> {
+        self.transcrever_dica(pcm, idioma, "").await
+    }
+
+    async fn transcrever_dica(&self, pcm: &[i16], idioma: &str, dica: &str) -> Result<String> {
         let (chave, modelo) = (self.credenciais)();
         if chave.is_empty() {
             return Err(anyhow!("Chave da OpenAI não configurada."));
         }
         let wav = pcm16_para_wav(pcm, TAXA);
-        let mut res = self.enviar(&wav, &chave, &modelo, idioma).await?;
+        let mut res = self.enviar(&wav, &chave, &modelo, idioma, dica).await?;
         // uma nova tentativa para limite de uso (429) ou falha do servidor (5xx)
         if res.status().as_u16() == 429 || res.status().is_server_error() {
             tokio::time::sleep(self.espera_nova_tentativa).await;
-            res = self.enviar(&wav, &chave, &modelo, idioma).await?;
+            res = self.enviar(&wav, &chave, &modelo, idioma, dica).await?;
         }
         let status = res.status();
         let json: serde_json::Value = res.json().await.unwrap_or_default();
@@ -123,6 +130,17 @@ mod testes {
         let e = TranscricaoOpenAi::com_url(url, cred("k")).sem_espera().transcrever(&[0i16; 8]).await.unwrap_err().to_string();
         assert!(e.contains("401"));
         assert_eq!(pedidos.lock().unwrap().len(), 1, "401 não repete");
+    }
+
+    #[tokio::test]
+    async fn dica_vai_como_prompt() {
+        let (url, pedidos) = servidor_falso(200, r#"{"text":"ok"}"#).await;
+        let t = TranscricaoOpenAi::com_url(url, cred("k"));
+        t.transcrever_dica(&[0i16; 8], "pt", "Nomes e termos desta reunião: Alfa.").await.unwrap();
+        t.transcrever_em(&[0i16; 8], "pt").await.unwrap();
+        let p = pedidos.lock().unwrap().clone();
+        assert!(p[0].contains("name=\"prompt\"") && p[0].contains("Alfa"));
+        assert!(!p[1].contains("name=\"prompt\""));
     }
 
     #[tokio::test]

@@ -45,7 +45,8 @@
     buscarDrive: (q) => invoke('drive_buscar', { q }),
     anexarDoDrive: (id) => invoke('drive_anexar', { id }),
 
-    perguntar: (pergunta, id) => invoke('perguntar', { pergunta, id: id ?? null }),
+    perguntar: (pergunta, id, pedido) => invoke('perguntar', { pergunta, id: id ?? null, pedido: pedido ?? null }),
+    aoPerguntaParcial: ouvir('pergunta:parcial'),
 
     iniciarReuniao: () => invoke('reuniao_iniciar'),
     pararReuniao: () => invoke('reuniao_parar'),

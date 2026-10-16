@@ -40,6 +40,10 @@ pub struct Config {
     pub llm_local: String,
     /// "cpu" ou "vulkan" (placa de vídeo) para o modelo de análise local.
     pub aceleracao: String,
+    /// Manda nomes e siglas do material como dica ao transcritor.
+    pub dica_termos: bool,
+    /// Separa os participantes em "Outros" (só com a transcrição da OpenAI).
+    pub identificar_falantes: bool,
 }
 
 impl Default for Config {
@@ -63,6 +67,8 @@ impl Default for Config {
             analise_local: false,
             llm_local: "qwen3-4b-q4".into(),
             aceleracao: "cpu".into(),
+            dica_termos: true,
+            identificar_falantes: false,
         }
     }
 }
@@ -139,6 +145,8 @@ impl Configuracoes {
             "analiseLocal": c.analise_local,
             "llmLocal": c.llm_local,
             "aceleracao": c.aceleracao,
+            "dicaTermos": c.dica_termos,
+            "identificarFalantes": c.identificar_falantes,
         })
     }
 
@@ -159,6 +167,8 @@ impl Configuracoes {
         if let Some(v) = novos["apagarAposDias"].as_u64() { c.apagar_apos_dias = v.min(3650) as u32; }
         if let Some(v) = novos["transcricaoLocal"].as_bool() { c.transcricao_local = v; }
         if let Some(v) = novos["analiseLocal"].as_bool() { c.analise_local = v; }
+        if let Some(v) = novos["dicaTermos"].as_bool() { c.dica_termos = v; }
+        if let Some(v) = novos["identificarFalantes"].as_bool() { c.identificar_falantes = v; }
         let id_valido = |id: &str, tipo: Tipo| crate::locais::CATALOGO.iter().any(|m| m.id == id && m.tipo == tipo);
         if let Some(v) = texto("whisperLocal").filter(|v| id_valido(v, Tipo::Whisper)) { c.whisper_local = v; }
         if let Some(v) = texto("llmLocal").filter(|v| id_valido(v, Tipo::Llm)) { c.llm_local = v; }

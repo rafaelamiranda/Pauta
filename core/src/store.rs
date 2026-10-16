@@ -123,11 +123,40 @@ impl Store {
 
     fn de_conexao(conn: Connection) -> Result<Self> {
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        Self::liberar_falantes(&conn)?;
         conn.execute_batch(include_str!("schema.sql"))?;
         let s = Self { conn };
         s.garantir_coluna("sessions", "context", "TEXT")?; // bancos criados antes do material de apoio
         s.reconstruir_indices()?;
         Ok(s)
+    }
+
+    /// Bancos antigos só aceitavam "ME" e "THEY" como falante. Agora também vale "THEY:Pessoa 2".
+    /// O SQLite não altera uma regra CHECK, então a tabela é refeita, mantendo os rowids (o índice de busca usa eles).
+    fn liberar_falantes(conn: &Connection) -> Result<()> {
+        use rusqlite::OptionalExtension;
+        let sql: Option<String> = conn.query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'", [], |r| r.get(0)).optional()?;
+        if !sql.is_some_and(|s| s.contains("speaker IN ('ME', 'THEY')") && !s.contains("LIKE")) {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE messages_nova (
+               id TEXT PRIMARY KEY,
+               session_id TEXT NOT NULL,
+               role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'system')),
+               content TEXT NOT NULL,
+               speaker TEXT CHECK(speaker IS NULL OR speaker IN ('ME', 'THEY') OR speaker LIKE 'THEY:%'),
+               timestamp INTEGER NOT NULL,
+               FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+             );
+             INSERT INTO messages_nova (rowid, id, session_id, role, content, speaker, timestamp)
+               SELECT rowid, id, session_id, role, content, speaker, timestamp FROM messages;
+             DROP TABLE messages;
+             ALTER TABLE messages_nova RENAME TO messages;
+             COMMIT;",
+        )?;
+        Ok(())
     }
 
     fn garantir_coluna(&self, tabela: &str, coluna: &str, tipo: &str) -> Result<()> {
@@ -493,6 +522,30 @@ mod testes {
         novo.definir_contexto("velha", "ok").unwrap();
         assert_eq!(novo.contexto("velha").unwrap().as_deref(), Some("ok"));
         drop(novo);
+        let _ = std::fs::remove_file(arq);
+    }
+
+    #[test]
+    fn banco_antigo_passa_a_aceitar_falante_com_nome_sem_perder_a_busca() {
+        let arq = std::env::temp_dir().join(format!("antigo-{}.db", uuid::Uuid::new_v4()));
+        {
+            let c = Connection::open(&arq).unwrap();
+            // esquema de antes da identificação de falantes
+            let antigo = include_str!("schema.sql").replace("speaker TEXT CHECK(speaker IS NULL OR speaker IN ('ME', 'THEY') OR speaker LIKE 'THEY:%'),", "speaker TEXT CHECK(speaker IN ('ME', 'THEY')),");
+            c.execute_batch(&antigo).unwrap();
+            c.execute_batch("INSERT INTO sessions (id, user_id, started_at) VALUES ('s', 'u', 1);
+                INSERT INTO messages (id, session_id, role, content, speaker, timestamp) VALUES ('m1', 's', 'user', 'orçamento aprovado', 'THEY', 5);").unwrap();
+            assert!(c.execute_batch("INSERT INTO messages (id, session_id, role, content, speaker, timestamp) VALUES ('m2', 's', 'user', 'x', 'THEY:Pessoa 1', 6)").is_err());
+        }
+        let s = Store::abrir(&arq).unwrap();
+        s.adicionar_mensagem("m3", "s", "prazo é sexta", Some("THEY:Pessoa 1"), 7).unwrap();
+        assert!(s.adicionar_mensagem("m4", "s", "x", Some("QUALQUER"), 8).is_err(), "a regra continua valendo");
+        let falas = s.transcricao("s").unwrap();
+        assert_eq!(falas.iter().map(|f| f.speaker.as_deref().unwrap()).collect::<Vec<_>>(), ["THEY", "THEY:Pessoa 1"]);
+        assert_eq!(s.buscar("u", busca("orcamento")).unwrap().total, 1, "o índice de busca continua ligado às mensagens antigas");
+        assert_eq!(s.buscar("u", busca("sexta")).unwrap().total, 1, "e as novas entram no índice");
+        drop(s);
+        let _ = Store::abrir(&arq).unwrap(); // abrir de novo não refaz nada
         let _ = std::fs::remove_file(arq);
     }
 

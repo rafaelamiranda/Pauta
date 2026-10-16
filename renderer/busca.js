@@ -81,6 +81,13 @@
     });
   }
 
+  /** Quem falou: "ME" é "Eu"; "THEY:Pessoa 2" é "Pessoa 2"; o resto é "Outros". */
+  const rotulo = (speaker) => (speaker === 'ME' ? 'Eu' : speaker?.startsWith('THEY:') && speaker.length > 5 ? speaker.slice(5) : 'Outros');
+
+  // A resposta chega aos poucos: um único ouvinte repassa o texto parcial para a caixa que fez o pedido.
+  const parciais = new Map();
+  window.busca.aoPerguntaParcial(({ pedido, texto }) => parciais.get(pedido)?.(texto));
+
   /** Caixa "Pergunte sobre o material e a reunião". `id` = conversa; null = reunião em andamento. */
   function caixaPergunta(id) {
     const caixa = el('div');
@@ -109,7 +116,20 @@
       copia.hidden = true;
       resp.className = 'resposta estado';
       resp.textContent = 'Pensando...';
-      const r = await window.busca.perguntar(q, id);
+      const pedido = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      parciais.set(pedido, (texto) => {
+        if (!texto) return;
+        resp.className = 'resposta';
+        resp.textContent = texto;
+      });
+      let r;
+      try {
+        r = await window.busca.perguntar(q, id, pedido);
+      } catch (e) {
+        r = { ok: false, erro: String(e) };
+      } finally {
+        parciais.delete(pedido);
+      }
       botao.disabled = false;
       resp.className = r.ok ? 'resposta' : 'resposta erro';
       resp.textContent = r.ok ? r.resposta : r.erro;
@@ -133,7 +153,7 @@
     return caixa;
   }
 
-  window.UI = { el, renderResumo, caixaPergunta, confirmarDuplo, copiar };
+  window.UI = { el, renderResumo, caixaPergunta, confirmarDuplo, copiar, rotulo };
 
   /** Converte "[palavra]" do trecho em <mark>, sem usar innerHTML. */
   function comDestaque(texto) {
@@ -242,7 +262,7 @@
     if (!falas.length) detalhe.append(el('p', 'estado', 'Sem transcrição.'));
     for (const f of falas) {
       const p = el('div', f.speaker === 'ME' ? 'fala' : 'fala outros');
-      p.append(el('b', null, f.speaker === 'ME' ? 'Eu' : 'Outros'), f.text);
+      p.append(el('b', null, rotulo(f.speaker)), f.text);
       detalhe.append(p);
     }
     const exportar = el('div', 'acoes');

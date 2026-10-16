@@ -1,13 +1,14 @@
 //! Uma reunião: recebe áudio das duas fontes, transcreve em tempo real e, ao parar,
 //! gera o resumo, grava e envia por e-mail. O que a pessoa precisa ver sai por `emitir`.
 
+use crate::falantes::{atribuir, Conhecido, Diarizador};
 use crate::mail::{DadosEmail, Envio, Remetente};
-use crate::material::{compor, reduzir, Documento};
+use crate::material::{compor, dica_de_termos, reduzir, Documento};
 use crate::segmenter::{Fala, Segmentador};
 use crate::settings::Config;
 use crate::store::{NovaSessao, Pendencia, Store};
 use crate::summary::{formatar_transcricao, Resumidor, Resumo};
-use crate::whisper::Transcritor;
+use crate::whisper::{sem_eco, Transcritor};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -55,6 +56,21 @@ pub struct Dependencias {
     pub config: Arc<dyn Fn() -> Config + Send + Sync>,
     pub emitir: Emitir,
     pub agora: Arc<dyn Fn() -> i64 + Send + Sync>,
+    /// Separa os participantes em "Outros" (só a OpenAI faz isso); `None` desliga o recurso.
+    pub diarizador: Option<Arc<dyn Diarizador>>,
+}
+
+/// Tamanho máximo da lista de termos enviada como dica ao transcritor (em caracteres).
+const TAMANHO_DICA: usize = 300;
+
+/// O que cada fala precisa saber da reunião para ser transcrita.
+#[derive(Clone)]
+struct ContextoFala {
+    /// Nomes e siglas do material, enviados como dica ao transcritor.
+    dica: String,
+    /// Vozes já ouvidas em "Outros", em ordem. O lock também põe as falas numa fila, para o
+    /// reconhecimento de cada voz usar o que as falas anteriores descobriram.
+    falantes: Arc<tokio::sync::Mutex<Vec<Conhecido>>>,
 }
 
 struct Ativa {
@@ -64,6 +80,7 @@ struct Ativa {
     sistema: Segmentador,
     tarefas: Vec<JoinHandle<()>>,
     rt: tokio::runtime::Handle,
+    ctx: ContextoFala,
 }
 
 pub struct Reuniao {
@@ -99,6 +116,15 @@ fn fim_do_texto(t: &str, max: usize) -> &str {
     &t[i..]
 }
 
+/// Grava uma fala e avisa a tela. `falante`: "ME", "THEY" ou "THEY:Pessoa 2".
+fn guardar_fala(dep: &Dependencias, sessao: &str, texto: &str, falante: &str, timestamp: i64) {
+    let r = dep.store.lock().unwrap().adicionar_mensagem(&uuid::Uuid::new_v4().to_string(), sessao, texto, Some(falante), timestamp);
+    if let Err(e) = r {
+        (dep.emitir)("reuniao:aviso", json!(format!("Não foi possível gravar uma fala: {e}")));
+    }
+    (dep.emitir)("reuniao:fala", json!({"speaker": falante, "text": texto, "timestamp": timestamp}));
+}
+
 fn data_local(ms: i64) -> String {
     use chrono::TimeZone;
     chrono::Local.timestamp_millis_opt(ms).single().map(|d| d.format("%d-%m-%Y").to_string()).unwrap_or_default()
@@ -114,8 +140,10 @@ impl Reuniao {
 
     /// Grava o material atual na reunião em andamento, se houver.
     fn gravar_material_na_reuniao(&self) -> Result<()> {
-        if let Some(a) = self.ativa.lock().unwrap().as_ref() {
-            self.dep.store.lock().unwrap().definir_contexto(&a.id, &self.material())?;
+        if let Some(a) = self.ativa.lock().unwrap().as_mut() {
+            let material = self.material();
+            a.ctx.dica = dica_de_termos(&material, TAMANHO_DICA);
+            self.dep.store.lock().unwrap().definir_contexto(&a.id, &material)?;
         }
         Ok(())
     }
@@ -174,6 +202,11 @@ impl Reuniao {
     /// Responde uma pergunta com o material e a transcrição. Sem `sessao`, usa a reunião em
     /// andamento (ou só o material, se não houver). Com `sessao`, usa o material gravado nela.
     pub async fn perguntar(&self, pergunta: &str, sessao: Option<&str>) -> Result<String> {
+        self.perguntar_parcial(pergunta, sessao, &|_| {}).await
+    }
+
+    /// Como `perguntar`, chamando `parcial` com a resposta já escrita enquanto ela chega.
+    pub async fn perguntar_parcial(&self, pergunta: &str, sessao: Option<&str>, parcial: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String> {
         let ativa_id = self.ativa.lock().unwrap().as_ref().map(|a| a.id.clone());
         let id = sessao.map(str::to_string).or(ativa_id.clone());
         let (material, transcricao) = match &id {
@@ -194,7 +227,7 @@ impl Reuniao {
         } else {
             transcricao
         };
-        self.dep.resumidor.responder(pergunta, &material, &transcricao, &cfg.openai_key, &cfg.openai_model).await
+        self.dep.resumidor.responder_parcial(pergunta, &material, &transcricao, &cfg.openai_key, &cfg.openai_model, parcial).await
     }
 
     pub fn em_andamento(&self) -> bool {
@@ -213,9 +246,10 @@ impl Reuniao {
             id: &id, user_id: &self.dep.usuario, ativa: true, started_at: inicio / 1000, ..Default::default()
         })?;
         self.dep.store.lock().unwrap().definir_contexto(&id, &self.material())?;
+        let ctx = ContextoFala { dica: dica_de_termos(&self.material(), TAMANHO_DICA), falantes: Default::default() };
         *g = Some(Ativa {
             id: id.clone(), inicio, mic: Segmentador::new(), sistema: Segmentador::new(),
-            tarefas: vec![], rt: tokio::runtime::Handle::current(),
+            tarefas: vec![], rt: tokio::runtime::Handle::current(), ctx,
         });
         (self.dep.emitir)("reuniao:estado", json!({"fase": "gravando", "id": id}));
         Ok(id)
@@ -239,26 +273,43 @@ impl Reuniao {
             Fonte::Sistema => &mut a.sistema,
         };
         if let Some(fala) = seg.push(pcm, agora) {
-            let t = self.transcrever(&a.rt, &a.id, fonte, fala);
+            let t = self.transcrever(&a.rt, &a.id, fonte, fala, a.ctx.clone());
             a.tarefas.push(t);
         }
     }
 
-    fn transcrever(&self, rt: &tokio::runtime::Handle, id: &str, fonte: Fonte, fala: Fala) -> JoinHandle<()> {
+    fn transcrever(&self, rt: &tokio::runtime::Handle, id: &str, fonte: Fonte, fala: Fala, ctx: ContextoFala) -> JoinHandle<()> {
         let dep = self.dep.clone();
         let id = id.to_string();
         rt.spawn(async move {
-            match dep.transcritor.transcrever(&fala.pcm).await {
-                Ok(texto) if !texto.is_empty() => {
-                    let r = dep.store.lock().unwrap().adicionar_mensagem(
-                        &uuid::Uuid::new_v4().to_string(), &id, &texto, Some(fonte.falante()), fala.inicio_ms,
-                    );
-                    if let Err(e) = r {
-                        (dep.emitir)("reuniao:aviso", json!(format!("Não foi possível gravar uma fala: {e}")));
+            let cfg = (dep.config)();
+            let dica = if cfg.dica_termos { ctx.dica.clone() } else { String::new() };
+            let separar = fonte == Fonte::Sistema && cfg.identificar_falantes && !cfg.transcricao_local;
+            if let (true, Some(d)) = (separar, dep.diarizador.clone()) {
+                let mut registro = ctx.falantes.lock().await;
+                match d.diarizar(&fala.pcm, &cfg.idioma, &registro).await {
+                    Ok(trechos) => {
+                        let partes = atribuir(&mut registro, &fala.pcm, trechos);
+                        drop(registro);
+                        for p in partes {
+                            let falante = p.falante.map_or_else(|| "THEY".to_string(), |n| format!("THEY:{n}"));
+                            guardar_fala(&dep, &id, &p.texto, &falante, fala.inicio_ms + p.inicio_ms);
+                        }
+                        return;
                     }
-                    (dep.emitir)("reuniao:fala", json!({"speaker": fonte.falante(), "text": texto, "timestamp": fala.inicio_ms}));
+                    Err(e) => {
+                        drop(registro);
+                        (dep.emitir)("reuniao:aviso", json!(format!("Não foi possível identificar quem falou: {e} Transcrevendo sem identificar.")));
+                    }
                 }
-                Ok(_) => {}
+            }
+            match dep.transcritor.transcrever_dica(&fala.pcm, &cfg.idioma, &dica).await {
+                Ok(texto) => {
+                    let texto = sem_eco(texto, &dica);
+                    if !texto.is_empty() {
+                        guardar_fala(&dep, &id, &texto, fonte.falante(), fala.inicio_ms);
+                    }
+                }
                 Err(e) => (dep.emitir)("reuniao:aviso", json!(format!("Falha ao transcrever um trecho: {e}"))),
             }
         })
@@ -266,12 +317,12 @@ impl Reuniao {
 
     pub async fn parar(&self) -> Result<()> {
         let a = self.ativa.lock().unwrap().take().ok_or_else(|| anyhow!("Nenhuma reunião em andamento."))?;
-        let Ativa { id, inicio, mut mic, mut sistema, mut tarefas, rt } = a;
+        let Ativa { id, inicio, mut mic, mut sistema, mut tarefas, rt, ctx } = a;
         let dep = &self.dep;
         (dep.emitir)("reuniao:estado", json!({"fase": "finalizando"}));
 
-        if let Some(f) = mic.flush() { tarefas.push(self.transcrever(&rt, &id, Fonte::Mic, f)); }
-        if let Some(f) = sistema.flush() { tarefas.push(self.transcrever(&rt, &id, Fonte::Sistema, f)); }
+        if let Some(f) = mic.flush() { tarefas.push(self.transcrever(&rt, &id, Fonte::Mic, f, ctx.clone())); }
+        if let Some(f) = sistema.flush() { tarefas.push(self.transcrever(&rt, &id, Fonte::Sistema, f, ctx)); }
         for t in tarefas {
             let _ = t.await;
         }
@@ -400,6 +451,7 @@ mod testes {
             config: Arc::new(|| Config { openai_key: "k".into(), smtp_user: "a".into(), smtp_pass: "b".into(), destinatario: "c".into(), ..Default::default() }),
             emitir: Arc::new(move |c, d| ev.lock().unwrap().push((c.to_string(), d))),
             agora: Arc::new(move || relogio.fetch_add(1000, Ordering::SeqCst)),
+            diarizador: None,
         };
         (Reuniao::new(dep), eventos, caixa)
     }
@@ -532,6 +584,133 @@ mod testes {
         assert!(resp.len() < ORCAMENTO_MATERIAL + 5_000, "tamanho {}", resp.len());
     }
 
+    /// Transcritor que guarda a dica e o idioma recebidos em cada fala.
+    struct Espiao(Mutex<Vec<(String, String)>>, &'static str);
+    #[async_trait]
+    impl Transcritor for Espiao {
+        async fn transcrever(&self, _: &[i16]) -> Result<String> {
+            Ok(self.1.into())
+        }
+        async fn transcrever_dica(&self, _: &[i16], idioma: &str, dica: &str) -> Result<String> {
+            self.0.lock().unwrap().push((idioma.into(), dica.into()));
+            Ok(self.1.into())
+        }
+    }
+
+    struct VozesFixas(Mutex<Vec<Vec<crate::falantes::Trecho>>>, Mutex<Vec<usize>>);
+    #[async_trait]
+    impl Diarizador for VozesFixas {
+        async fn diarizar(&self, _: &[i16], _: &str, conhecidos: &[Conhecido]) -> Result<Vec<crate::falantes::Trecho>> {
+            self.1.lock().unwrap().push(conhecidos.len());
+            Ok(self.0.lock().unwrap().remove(0))
+        }
+    }
+
+    fn montar_com(config: Config, transcritor: Arc<dyn Transcritor>, diarizador: Option<Arc<dyn Diarizador>>) -> (Reuniao, Eventos) {
+        let eventos: Eventos = Default::default();
+        let ev = eventos.clone();
+        let relogio = Arc::new(AtomicI64::new(1_000_000));
+        let dep = Dependencias {
+            store: Arc::new(Mutex::new(Store::em_memoria().unwrap())),
+            usuario: "u".into(),
+            transcritor,
+            resumidor: Arc::new(ResumoFixo(None, Default::default())),
+            remetente: Arc::new(Arc::new(Caixa::default())),
+            config: Arc::new(move || config.clone()),
+            emitir: Arc::new(move |c, d| ev.lock().unwrap().push((c.to_string(), d))),
+            agora: Arc::new(move || relogio.fetch_add(1000, Ordering::SeqCst)),
+            diarizador,
+        };
+        (Reuniao::new(dep), eventos)
+    }
+
+    #[tokio::test]
+    async fn nomes_do_material_vao_como_dica_e_o_ajuste_desliga() {
+        for (ligada, esperado_com_dica) in [(true, true), (false, false)] {
+            let espiao = Arc::new(Espiao(Default::default(), "Fechamos com a Alfa"));
+            let cfg = Config { dica_termos: ligada, idioma: "en".into(), ..Default::default() };
+            let (r, _) = montar_com(cfg, espiao.clone(), None);
+            r.definir_material("Contrato com a Maria Souza da Alfa Corp").unwrap();
+            r.iniciar().unwrap();
+            falar(&r, Fonte::Mic);
+            r.parar().await.unwrap_or(());
+            let vistos = espiao.0.lock().unwrap().clone();
+            assert_eq!(vistos.len(), 1);
+            assert_eq!(vistos[0].0, "en");
+            assert_eq!(vistos[0].1.contains("Maria") && vistos[0].1.contains("Alfa"), esperado_com_dica, "{:?}", vistos[0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn material_novo_durante_a_reuniao_atualiza_a_dica() {
+        let espiao = Arc::new(Espiao(Default::default(), "ok"));
+        let (r, _) = montar_com(Config::default(), espiao.clone(), None);
+        r.iniciar().unwrap();
+        r.definir_material("Reunião sobre o projeto Zeta").unwrap();
+        falar(&r, Fonte::Mic);
+        r.parar().await.unwrap_or(());
+        assert!(espiao.0.lock().unwrap()[0].1.contains("Zeta"));
+    }
+
+    #[tokio::test]
+    async fn eco_da_dica_nao_vira_fala() {
+        let espiao = Arc::new(Espiao(Default::default(), "Nomes e termos desta reunião: Alfa."));
+        let (r, eventos) = montar_com(Config::default(), espiao, None);
+        r.definir_material("Projeto Alfa e Beta").unwrap();
+        r.iniciar().unwrap();
+        falar(&r, Fonte::Mic);
+        r.parar().await.unwrap_or(());
+        assert!(!eventos.lock().unwrap().iter().any(|e| e.0 == "reuniao:fala"));
+    }
+
+    #[tokio::test]
+    async fn outros_ganham_nome_por_pessoa_e_o_microfone_continua_eu() {
+        use crate::falantes::Trecho;
+        let t = |f: &str, x: &str, a: f64, b: f64| Trecho { falante: f.into(), texto: x.into(), inicio_s: a, fim_s: b };
+        // 1ª fala: "A" fala 2,4 s (vira Pessoa 1) e "B" só 0,8 s (pouca voz, fica sem nome);
+        // 2ª fala: o modelo reconhece "Pessoa 1" pelo nome
+        let voz = Arc::new(VozesFixas(
+            Mutex::new(vec![vec![t("A", "Bom dia", 0.0, 2.4), t("B", "Oi, tudo bem?", 2.4, 3.2)], vec![t("Pessoa 1", "Vamos começar", 0.0, 0.5)]]),
+            Default::default(),
+        ));
+        let cfg = Config { identificar_falantes: true, ..Default::default() };
+        let (r, eventos) = montar_com(cfg, Arc::new(Fila(Mutex::new(vec!["Eu falo aqui"]))), Some(voz.clone()));
+        let id = r.iniciar().unwrap();
+        for _ in 0..50 { r.receber_audio(Fonte::Sistema, &[6000i16; 1600]); }
+        for _ in 0..8 { r.receber_audio(Fonte::Sistema, &[0i16; 1600]); } // silêncio fecha a primeira fala
+        for _ in 0..10 { r.receber_audio(Fonte::Sistema, &[6000i16; 1600]); }
+        falar(&r, Fonte::Mic);
+        r.parar().await.unwrap();
+        let falas = r.dep.store.lock().unwrap().transcricao(&id).unwrap();
+        let ver = |f: &str| falas.iter().filter(|x| x.speaker.as_deref() == Some(f)).map(|x| x.text.clone()).collect::<Vec<_>>();
+        assert_eq!(ver("ME"), ["Eu falo aqui"]);
+        assert_eq!(ver("THEY:Pessoa 1"), ["Bom dia", "Vamos começar"], "{falas:?} {:?}", eventos.lock().unwrap());
+        assert_eq!(ver("THEY"), ["Oi, tudo bem?"]);
+        assert_eq!(*voz.1.lock().unwrap(), vec![0, 1], "a 2ª fala já recebe a voz da Pessoa 1");
+        let transcricao = formatar_transcricao(&falas);
+        assert!(transcricao.contains("Eu: Eu falo aqui") && transcricao.contains("Pessoa 1: Vamos começar") && transcricao.contains("Outros: Oi"), "{transcricao}");
+        assert!(eventos.lock().unwrap().iter().any(|e| e.0 == "reuniao:fala" && e.1["speaker"] == "THEY:Pessoa 1"));
+    }
+
+    #[tokio::test]
+    async fn falha_ao_identificar_cai_na_transcricao_comum() {
+        struct Quebrado;
+        #[async_trait]
+        impl Diarizador for Quebrado {
+            async fn diarizar(&self, _: &[i16], _: &str, _: &[Conhecido]) -> Result<Vec<crate::falantes::Trecho>> {
+                Err(anyhow!("fora do ar"))
+            }
+        }
+        let cfg = Config { identificar_falantes: true, ..Default::default() };
+        let (r, eventos) = montar_com(cfg, Arc::new(Fila(Mutex::new(vec!["texto normal"]))), Some(Arc::new(Quebrado)));
+        let id = r.iniciar().unwrap();
+        falar(&r, Fonte::Sistema);
+        r.parar().await.unwrap();
+        let falas = r.dep.store.lock().unwrap().transcricao(&id).unwrap();
+        assert_eq!((falas[0].speaker.as_deref(), falas[0].text.as_str()), (Some("THEY"), "texto normal"));
+        assert!(eventos.lock().unwrap().iter().any(|e| e.0 == "reuniao:aviso" && e.1.as_str().unwrap().contains("fora do ar")));
+    }
+
     #[test]
     fn volume_e_enviado_no_maximo_dez_vezes_por_segundo() {
         let (r, eventos, _) = montar(vec![], None);
@@ -559,6 +738,7 @@ mod testes {
             config: Arc::new(|| Config { analise_local: true, ..Default::default() }),
             emitir: Arc::new(move |c, d| eventos.lock().unwrap().push((c.to_string(), d))),
             agora: Arc::new(move || relogio.fetch_add(1000, Ordering::SeqCst)),
+            diarizador: None,
         };
         let r = Reuniao::new(dep);
         r.anexar_documento(Documento { id: "a".into(), nome: "Grande".into(), origem: "arquivo".into(), texto: "palavra solta. ".repeat(10_000) }).unwrap();

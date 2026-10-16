@@ -102,6 +102,8 @@
       if (segredos.includes(k)) $(k).placeholder = c[`${k}Definida`] ? 'Já salva. Deixe em branco para manter.' : '';
     }
     $('enviarAutomatico').checked = Boolean(c.enviarAutomatico);
+    $('dicaTermos').checked = Boolean(c.dicaTermos);
+    $('identificarFalantes').checked = Boolean(c.identificarFalantes);
     $('apagarAposDias').value = String(c.apagarAposDias ?? 0);
     window.Ajustes.pronto = { resumo: Boolean(c.openaiKeyDefinida || (c.transcricaoLocal && c.analiseLocal)), analiseLocal: Boolean(c.analiseLocal), email: Boolean(c.smtpUser && c.smtpPassDefinida && c.destinatario), drive: false };
     const modo = (await window.ModelosLocais?.carregar(c)) ?? 'openai';
@@ -114,6 +116,8 @@
   async function salvar() {
     const dados = Object.fromEntries(campos.map((k) => [k, $(k).value.trim()]));
     dados.enviarAutomatico = $('enviarAutomatico').checked;
+    dados.dicaTermos = $('dicaTermos').checked;
+    dados.identificarFalantes = $('identificarFalantes').checked;
     dados.microfone = $('microfone').value;
     dados.saida = $('saida').value;
     Object.assign(dados, window.ModelosLocais?.valores());

@@ -65,6 +65,72 @@ fn termos(texto: &str) -> Vec<String> {
         .collect()
 }
 
+/// Dica para o transcritor: nomes próprios, siglas e códigos do material, os mais repetidos primeiro.
+/// Devolve vazio se não achar nada. `max` limita o tamanho da lista de termos (em caracteres).
+pub fn dica_de_termos(material: &str, max: usize) -> String {
+    use std::collections::HashMap;
+    let mut contagem: HashMap<String, (usize, usize, String)> = HashMap::new(); // chave -> (vezes, ordem, forma)
+    let mut inicio_de_frase = true;
+    let mut palavra = String::new();
+    let mut ordem = 0;
+    let mut linha_de_marca = false;
+    let chars: Vec<char> = material.chars().chain(std::iter::once('\n')).collect();
+    for (i, &c) in chars.iter().enumerate() {
+        let dentro = c.is_alphanumeric()
+            || ((c == '-' || c == '_') && !palavra.is_empty() && chars.get(i + 1).is_some_and(|n| n.is_alphanumeric()));
+        if dentro {
+            palavra.push(c);
+            continue;
+        }
+        if !palavra.is_empty() {
+            let w = std::mem::take(&mut palavra);
+            if !linha_de_marca || w.to_lowercase() != "documento" {
+                let n = w.chars().count();
+                let letras = w.chars().filter(|c| c.is_alphabetic()).count();
+                let maiusculas = w.chars().filter(|c| c.is_uppercase()).count();
+                let digitos = w.chars().any(|c| c.is_ascii_digit());
+                let primeira_maiuscula = w.chars().next().is_some_and(char::is_uppercase);
+                let sigla = n >= 2 && letras >= 1 && maiusculas == letras;
+                let codigo = n >= 3 && digitos && letras >= 1;
+                let misto = n >= 3 && maiusculas >= 2 && maiusculas < letras;
+                let nome = n >= 3 && primeira_maiuscula && !inicio_de_frase && maiusculas < letras;
+                if sigla || codigo || misto || nome {
+                    ordem += 1;
+                    let e = contagem.entry(w.to_lowercase()).or_insert((0, ordem, w.clone()));
+                    e.0 += 1;
+                }
+            }
+            inicio_de_frase = false;
+        }
+        match c {
+            '.' | '!' | '?' | ':' | '\n' => inicio_de_frase = true,
+            _ => {}
+        }
+        if c == '\n' {
+            // a marca "=== DOCUMENTO: nome ===" não é um termo, mas o nome do documento pode ser
+            let resto: String = chars[i + 1..].iter().take(MARCA.len()).collect();
+            linha_de_marca = resto == MARCA;
+        }
+    }
+    let mut itens: Vec<(usize, usize, String)> = contagem.into_values().collect();
+    itens.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut lista = String::new();
+    for (_, _, forma) in itens {
+        let extra = if lista.is_empty() { 0 } else { 2 };
+        if lista.len() + extra + forma.len() > max {
+            break;
+        }
+        if extra > 0 {
+            lista.push_str(", ");
+        }
+        lista.push_str(&forma);
+    }
+    if lista.is_empty() { String::new() } else { format!("{DICA_ROTULO} {lista}.") }
+}
+
+/// Começo da dica enviada ao transcritor. Se a resposta traz isso de volta, o modelo repetiu a dica.
+pub const DICA_ROTULO: &str = "Nomes e termos desta reunião:";
+
 fn cortar(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
@@ -267,6 +333,31 @@ pub fn extrair_texto(nome: &str, mime: &str, bytes: &[u8]) -> Result<String> {
 
 #[cfg(test)]
 mod testes {
+    use super::dica_de_termos;
+
+    #[test]
+    fn dica_pega_nomes_siglas_e_codigos_sem_palavras_comuns() {
+        let m = "Reunião com a Maria Souza sobre o CRM da Alfa Corp. A Alfa quer integrar o CRM ao sistema SKU-204. O prazo é sexta.\n=== DOCUMENTO: Contrato Zeta ===\nCláusula sobre pagamento.";
+        let d = dica_de_termos(m, 300);
+        assert!(d.starts_with("Nomes e termos desta reunião: "), "{d}");
+        for t in ["Maria", "Souza", "CRM", "Alfa", "SKU-204", "Zeta"] {
+            assert!(d.contains(t), "{t} em {d}");
+        }
+        for t in ["Reunião", "prazo", "DOCUMENTO", "sexta"] {
+            assert!(!d.contains(t), "{t} em {d}");
+        }
+        // o mais repetido vem primeiro
+        assert!(d.find("CRM").unwrap() < d.find("Souza").unwrap(), "{d}");
+    }
+
+    #[test]
+    fn dica_respeita_o_limite_e_vazio_sem_termos() {
+        assert_eq!(dica_de_termos("tudo em minúsculas, sem nada de especial.", 300), "");
+        let muitos: String = (0..200).map(|i| format!("o Cliente{i}x ")).collect();
+        let d = dica_de_termos(&muitos, 100);
+        assert!(d.len() < 100 + 40, "{}", d.len());
+    }
+
     use super::*;
     use std::io::Write;
 
