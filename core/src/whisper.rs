@@ -8,6 +8,10 @@ use async_trait::async_trait;
 pub trait Transcritor: Send + Sync {
     /// Devolve o texto da fala, ou vazio se só havia ruído.
     async fn transcrever(&self, pcm: &[i16]) -> Result<String>;
+    /// Como `transcrever`, mas com o idioma do áudio dado ("auto" detecta sozinho).
+    async fn transcrever_em(&self, pcm: &[i16], _idioma: &str) -> Result<String> {
+        self.transcrever(pcm).await
+    }
 }
 
 /// O whisper costuma "inventar" marcações como "[BLANK_AUDIO]" ou "(música)" ao ouvir só ruído.
@@ -41,13 +45,18 @@ impl ClienteWhisper {
 #[async_trait]
 impl Transcritor for ClienteWhisper {
     async fn transcrever(&self, pcm: &[i16]) -> Result<String> {
+        let idioma = (self.idioma)();
+        self.transcrever_em(pcm, &idioma).await
+    }
+
+    async fn transcrever_em(&self, pcm: &[i16], idioma: &str) -> Result<String> {
         let _vez = self.fila.lock().await;
         let arquivo = reqwest::multipart::Part::bytes(pcm16_para_wav(pcm, TAXA)).file_name("fala.wav").mime_str("audio/wav")?;
         let form = reqwest::multipart::Form::new()
             .part("file", arquivo)
             .text("response_format", "json")
             .text("temperature", "0.0")
-            .text("language", (self.idioma)());
+            .text("language", idioma.to_string());
         let res = self.http.post(format!("{}/inference", self.url_base)).multipart(form).send().await?;
         if !res.status().is_success() {
             return Err(anyhow!("whisper-server respondeu {}", res.status().as_u16()));

@@ -30,6 +30,21 @@ impl Fonte {
     }
 }
 
+/// Quem recebe o áudio das capturas (a reunião ou a tradução).
+pub trait Receptor: Send + Sync {
+    fn receber_audio(&self, fonte: Fonte, pcm: &[i16]);
+    fn informar_nivel(&self, fonte: Fonte, valor: f32);
+}
+
+impl Receptor for Reuniao {
+    fn receber_audio(&self, fonte: Fonte, pcm: &[i16]) {
+        Reuniao::receber_audio(self, fonte, pcm);
+    }
+    fn informar_nivel(&self, fonte: Fonte, valor: f32) {
+        Reuniao::informar_nivel(self, fonte, valor);
+    }
+}
+
 #[derive(Clone)]
 pub struct Dependencias {
     pub store: Arc<Mutex<Store>>,

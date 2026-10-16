@@ -44,13 +44,12 @@ impl TranscricaoOpenAi {
         self
     }
 
-    async fn enviar(&self, wav: &[u8], chave: &str, modelo: &str) -> Result<reqwest::Response> {
+    async fn enviar(&self, wav: &[u8], chave: &str, modelo: &str, idioma: &str) -> Result<reqwest::Response> {
         let arquivo = reqwest::multipart::Part::bytes(wav.to_vec()).file_name("fala.wav").mime_str("audio/wav")?;
-        let form = reqwest::multipart::Form::new()
-            .part("file", arquivo)
-            .text("model", modelo.to_string())
-            .text("language", (self.idioma)())
-            .text("response_format", "json");
+        let mut form = reqwest::multipart::Form::new().part("file", arquivo).text("model", modelo.to_string()).text("response_format", "json");
+        if !idioma.is_empty() && idioma != "auto" {
+            form = form.text("language", idioma.to_string());
+        }
         Ok(self.http.post(format!("{}/audio/transcriptions", self.url_base)).bearer_auth(chave).multipart(form).send().await?)
     }
 }
@@ -58,16 +57,21 @@ impl TranscricaoOpenAi {
 #[async_trait]
 impl Transcritor for TranscricaoOpenAi {
     async fn transcrever(&self, pcm: &[i16]) -> Result<String> {
+        let idioma = (self.idioma)();
+        self.transcrever_em(pcm, &idioma).await
+    }
+
+    async fn transcrever_em(&self, pcm: &[i16], idioma: &str) -> Result<String> {
         let (chave, modelo) = (self.credenciais)();
         if chave.is_empty() {
             return Err(anyhow!("Chave da OpenAI não configurada."));
         }
         let wav = pcm16_para_wav(pcm, TAXA);
-        let mut res = self.enviar(&wav, &chave, &modelo).await?;
+        let mut res = self.enviar(&wav, &chave, &modelo, idioma).await?;
         // uma nova tentativa para limite de uso (429) ou falha do servidor (5xx)
         if res.status().as_u16() == 429 || res.status().is_server_error() {
             tokio::time::sleep(self.espera_nova_tentativa).await;
-            res = self.enviar(&wav, &chave, &modelo).await?;
+            res = self.enviar(&wav, &chave, &modelo, idioma).await?;
         }
         let status = res.status();
         let json: serde_json::Value = res.json().await.unwrap_or_default();

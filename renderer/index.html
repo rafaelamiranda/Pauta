@@ -13,6 +13,8 @@
     --item: rgba(255, 255, 255, 0.06);
     --destaque: #7c9cff;
     --marca: rgba(124, 156, 255, 0.28);
+    --campo: #2b2b32;
+    color-scheme: dark;
   }
   @media (prefers-color-scheme: light) {
     :root {
@@ -23,6 +25,8 @@
       --item: rgba(0, 0, 0, 0.05);
       --destaque: #3b5bdb;
       --marca: rgba(59, 91, 219, 0.20);
+      --campo: #ffffff;
+      color-scheme: light;
     }
   }
   * { box-sizing: border-box; margin: 0; }
@@ -124,9 +128,9 @@
   .linha-form select { width: auto; flex: 1; min-width: 160px; margin-top: 0; }
   select {
     padding: 7px 8px; border-radius: 8px; font: inherit; max-width: 100%;
-    border: 1px solid var(--borda); background: var(--item); color: var(--texto);
+    border: 1px solid var(--borda); background-color: var(--campo); color: var(--texto);
   }
-  select option { color: #1c1c22; }
+  select option { background-color: var(--campo); color: var(--texto); }
   .linha-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
   .linha-form > input[type=text] { flex: 1; min-width: 140px; }
   .lista-doc { list-style: none; padding: 0; margin: 8px 0 0; }
@@ -155,6 +159,19 @@
   .pend .texto { flex: 1; }
   .pend .origem { color: var(--suave); font-size: 12px; }
   .perigo-texto { color: #ef4444; }
+
+  /* tradução em tempo real */
+  .trad-idiomas { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-top: 4px; }
+  .trad-idiomas label { margin: 0; flex: 1; min-width: 130px; }
+  .trad-idiomas select { width: 100%; }
+  .trad-idiomas .icone { margin-bottom: 1px; }
+  .trad-fala { margin: 10px 0; padding: 8px 12px; background: var(--item); border-radius: 10px; }
+  .trad-fala .traduzido { font-size: 17px; line-height: 1.35; }
+  .trad-fala .traduzido.pendente { color: var(--suave); }
+  .trad-fala .original { color: var(--suave); font-size: 12px; margin-top: 3px; }
+  .trad-fala.fonte-mic { border-left: 3px solid var(--destaque); }
+  .trad-lista.sem-original .original { display: none; }
+  .trad-vazio { color: var(--suave); padding: 24px 0; text-align: center; }
 
   /* mini player */
   .player { display: none; height: 100%; align-items: center; gap: 10px; padding: 0 14px;
@@ -191,6 +208,7 @@
     <div class="abas" role="tablist" data-tauri-drag-region>
       <button class="aba" role="tab" data-vista="conversas" aria-selected="true">Conversas</button>
       <button class="aba" role="tab" data-vista="reuniao" aria-selected="false" id="aba-reuniao">Reunião</button>
+      <button class="aba" role="tab" data-vista="traducao" aria-selected="false" id="aba-traducao">Tradução</button>
       <button class="aba" role="tab" data-vista="pendencias" aria-selected="false">Pendências</button>
       <button class="aba" role="tab" data-vista="ajustes" aria-selected="false">Ajustes</button>
       <button class="icone aba-mini" id="minimizar" type="button" title="Minimizar para o mini player" aria-label="Minimizar para o mini player"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 19h14"/></svg></button>
@@ -210,6 +228,10 @@
 
     <section class="vista" id="v-reuniao">
       <div class="conteudo" id="reuniao-corpo"></div>
+    </section>
+
+    <section class="vista" id="v-traducao">
+      <div class="conteudo" id="traducao-corpo"></div>
     </section>
 
     <section class="vista" id="v-pendencias">
@@ -291,6 +313,7 @@
   <script src="locais.js"></script>
   <script src="mini.js"></script>
   <script src="reuniao.js"></script>
+  <script src="traducao.js"></script>
   <script src="pendencias.js"></script>
   <script src="fechar.js"></script>
   <script src="app.js"></script>

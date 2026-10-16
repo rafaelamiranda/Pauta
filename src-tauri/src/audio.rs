@@ -4,7 +4,7 @@
 pub use busca_core::captura_pulse::{dispositivos, iniciar, Captura};
 
 #[allow(unused_imports)]
-use busca_core::meeting::Reuniao;
+use busca_core::meeting::Receptor;
 #[allow(unused_imports)]
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ pub struct Captura {
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]
-pub fn iniciar(_: Arc<Reuniao>, _: String, _: String) -> Result<(Captura, Vec<String>), String> {
+pub fn iniciar(_: Arc<dyn Receptor>, _: String, _: String) -> Result<(Captura, Vec<String>), String> {
     Err("A captura de áudio só funciona no Windows e no Linux.".into())
 }
 
@@ -71,7 +71,7 @@ impl Drop for Captura {
 }
 
 #[cfg(windows)]
-pub fn iniciar(reuniao: Arc<Reuniao>, microfone: String, saida: String) -> Result<(Captura, Vec<String>), String> {
+pub fn iniciar(reuniao: Arc<dyn Receptor>, microfone: String, saida: String) -> Result<(Captura, Vec<String>), String> {
     use std::sync::mpsc;
     let (tx_parar, rx_parar) = mpsc::channel::<()>();
     let (tx_pronto, rx_pronto) = mpsc::channel::<Result<Vec<String>, String>>();
@@ -126,7 +126,7 @@ use busca_core::meeting::Fonte;
 
 /// Abre um dispositivo. Para a saída (alto-falante), abrir como *entrada* ativa o loopback do WASAPI.
 #[cfg(windows)]
-fn abrir(dev: &cpal::Device, fonte: Fonte, reuniao: Arc<Reuniao>) -> Result<cpal::Stream, String> {
+fn abrir(dev: &cpal::Device, fonte: Fonte, reuniao: Arc<dyn Receptor>) -> Result<cpal::Stream, String> {
     use cpal::traits::DeviceTrait;
     use cpal::SampleFormat;
     let cfg = match fonte {
@@ -145,7 +145,7 @@ fn abrir(dev: &cpal::Device, fonte: Fonte, reuniao: Arc<Reuniao>) -> Result<cpal
 }
 
 #[cfg(windows)]
-fn construir<T>(dev: &cpal::Device, config: &cpal::StreamConfig, fonte: Fonte, reuniao: Arc<Reuniao>) -> Result<cpal::Stream, String>
+fn construir<T>(dev: &cpal::Device, config: &cpal::StreamConfig, fonte: Fonte, reuniao: Arc<dyn Receptor>) -> Result<cpal::Stream, String>
 where
     T: cpal::SizedSample + Send + 'static,
     f32: cpal::FromSample<T>,

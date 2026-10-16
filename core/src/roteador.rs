@@ -32,12 +32,17 @@ impl TranscritorRoteador {
 #[async_trait]
 impl Transcritor for TranscritorRoteador {
     async fn transcrever(&self, pcm: &[i16]) -> Result<String> {
+        let idioma = (self.config)().idioma;
+        self.transcrever_em(pcm, &idioma).await
+    }
+
+    async fn transcrever_em(&self, pcm: &[i16], idioma: &str) -> Result<String> {
         let c = (self.config)();
         if !c.transcricao_local {
-            return self.nuvem.transcrever(pcm).await;
+            return self.nuvem.transcrever_em(pcm, idioma).await;
         }
         self.locais.garantir_whisper(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
-        self.local.transcrever(pcm).await.map_err(|e| anyhow!("Transcrição local falhou: {e}. {DICA}"))
+        self.local.transcrever_em(pcm, idioma).await.map_err(|e| anyhow!("Transcrição local falhou: {e}. {DICA}"))
     }
 }
 
@@ -72,6 +77,24 @@ impl Resumidor for ResumidorRoteador {
         }
         self.locais.garantir_llm(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
         self.local.responder(pergunta, material, transcricao, "", "local").await.map_err(|e| anyhow!("{e}. {DICA}"))
+    }
+
+    async fn traduzir(&self, texto: &str, origem: &str, destino: &str, chave: &str, modelo: &str) -> Result<String> {
+        let c = (self.config)();
+        if !c.analise_local {
+            return self.nuvem.traduzir(texto, origem, destino, chave, modelo).await;
+        }
+        self.locais.garantir_llm(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
+        self.local.traduzir(texto, origem, destino, "", "local").await.map_err(|e| anyhow!("{e}. {DICA}"))
+    }
+
+    async fn traduzir_parcial(&self, texto: &str, origem: &str, destino: &str, chave: &str, modelo: &str, parcial: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String> {
+        let c = (self.config)();
+        if !c.analise_local {
+            return self.nuvem.traduzir_parcial(texto, origem, destino, chave, modelo, parcial).await;
+        }
+        self.locais.garantir_llm(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
+        self.local.traduzir_parcial(texto, origem, destino, "", "local", parcial).await.map_err(|e| anyhow!("{e}. {DICA}"))
     }
 }
 

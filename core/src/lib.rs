@@ -17,6 +17,7 @@ pub mod segredos_linux;
 pub mod settings;
 pub mod store;
 pub mod summary;
+pub mod traducao;
 pub mod transcricao;
 pub mod wav;
 pub mod whisper;

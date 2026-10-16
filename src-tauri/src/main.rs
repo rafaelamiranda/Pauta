@@ -11,6 +11,7 @@ use busca_core::material::{extrair_texto, Documento};
 use busca_core::meeting::{Dependencias, Emitir, Reuniao};
 use busca_core::roteador::{ResumidorRoteador, TranscritorRoteador};
 use busca_core::settings::Configuracoes;
+use busca_core::traducao::{DependenciasTraducao, Entrada, Traducao, IDIOMAS};
 use busca_core::store::{Busca, OpcoesBusca, PendenciaGeral, Store};
 use busca_core::transcricao::TranscricaoOpenAi;
 use serde_json::{json, Value};
@@ -34,6 +35,8 @@ struct Estado {
     drive: Arc<Drive>,
     locais: Arc<Locais>,
     captura: Mutex<Option<audio::Captura>>,
+    traducao: Arc<Traducao>,
+    captura_traducao: Mutex<Option<audio::Captura>>,
     arquivo_material: PathBuf,
     arquivo_documentos: PathBuf,
 }
@@ -55,6 +58,11 @@ fn resposta(r: Result<Value, String>) -> Value {
 }
 
 impl Estado {
+    /// Há uma reunião ou uma tradução usando a captura de áudio.
+    fn capturando(&self) -> Result<bool, String> {
+        Ok(self.captura.lock().map_err(erro)?.is_some() || self.captura_traducao.lock().map_err(erro)?.is_some())
+    }
+
     /// Guarda em arquivo o texto colado e os documentos, para sobreviverem ao fechamento do app.
     fn persistir_material(&self) -> Result<(), String> {
         std::fs::write(&self.arquivo_material, self.reuniao.texto_material()).map_err(erro)?;
@@ -128,7 +136,7 @@ async fn config_ler(estado: State<'_, Estado>) -> Result<Value, String> {
 #[tauri::command]
 async fn config_salvar(estado: State<'_, Estado>, novos: Value) -> Result<Value, String> {
     let r = estado.config.salvar(&novos).map(|()| json!({})).map_err(erro);
-    if r.is_ok() && estado.captura.lock().map_err(erro)?.is_none() {
+    if r.is_ok() && !estado.capturando()? {
         // fora de reunião, desliga os servidores locais que deixaram de ser usados
         estado.locais.liberar_nao_usados(&estado.config.obter()).await;
     }
@@ -155,8 +163,8 @@ async fn local_cancelar(estado: State<'_, Estado>, id: String) -> Result<Value, 
 
 #[tauri::command]
 async fn local_apagar(estado: State<'_, Estado>, id: String) -> Result<Value, String> {
-    if estado.captura.lock().map_err(erro)?.is_some() {
-        return Ok(json!({ "ok": false, "erro": "Finalize a reunião em andamento antes de apagar um modelo." }));
+    if estado.capturando()? {
+        return Ok(json!({ "ok": false, "erro": "Finalize a reunião ou a tradução em andamento antes de apagar um modelo." }));
     }
     Ok(resposta(estado.locais.apagar(&id).await.map(|()| json!({})).map_err(erro)))
 }
@@ -373,6 +381,9 @@ async fn perguntar(estado: State<'_, Estado>, pergunta: String, id: Option<Strin
 #[tauri::command]
 async fn reuniao_iniciar(estado: State<'_, Estado>) -> Result<Value, String> {
     let cfg = estado.config.obter();
+    if estado.captura_traducao.lock().map_err(erro)?.is_some() {
+        return Ok(json!({ "ok": false, "erro": "Pare a tradução em andamento antes de iniciar uma reunião." }));
+    }
     if cfg.openai_key.is_empty() && !(cfg.transcricao_local && cfg.analise_local) {
         return Ok(json!({ "ok": false, "erro": "Configure a chave da OpenAI na aba Ajustes, ou escolha transcrição e análise locais. A chave é usada para o que não for local." }));
     }
@@ -412,6 +423,81 @@ async fn reuniao_parar(estado: State<'_, Estado>) -> Result<Value, String> {
 async fn reuniao_reenviar(estado: State<'_, Estado>, id: String) -> Result<Value, String> {
     estado.reuniao.enviar_por_email(&id, None).await;
     Ok(json!({ "ok": true }))
+}
+
+// ---- tradução em tempo real ----
+
+#[tauri::command]
+fn traducao_idiomas() -> Value {
+    Value::Array(IDIOMAS.iter().map(|(codigo, nome)| json!({ "codigo": codigo, "nome": nome })).collect())
+}
+
+#[tauri::command]
+async fn traducao_iniciar(estado: State<'_, Estado>, origem: String, destino: String, entrada: String) -> Result<Value, String> {
+    let cfg = estado.config.obter();
+    if estado.capturando()? {
+        return Ok(json!({ "ok": false, "erro": "Finalize a reunião em andamento antes de traduzir." }));
+    }
+    if cfg.openai_key.is_empty() && !(cfg.transcricao_local && cfg.analise_local) {
+        return Ok(json!({ "ok": false, "erro": "Configure a chave da OpenAI na aba Ajustes, ou escolha transcrição e análise locais. A chave é usada para o que não for local." }));
+    }
+    // sobe os servidores locais antes, para a primeira fala não esperar o modelo carregar
+    if cfg.transcricao_local {
+        if let Err(e) = estado.locais.garantir_whisper(&cfg).await {
+            return Ok(json!({ "ok": false, "erro": format!("{e} Em Ajustes, escolha a OpenAI para usar a nuvem.") }));
+        }
+    }
+    if cfg.analise_local {
+        if let Err(e) = estado.locais.garantir_llm(&cfg).await {
+            return Ok(json!({ "ok": false, "erro": format!("{e} Em Ajustes, escolha a OpenAI para usar a nuvem.") }));
+        }
+    }
+    if let Err(e) = estado.traducao.iniciar(&origem, &destino, Entrada::de_texto(&entrada)) {
+        return Ok(json!({ "ok": false, "erro": e.to_string() }));
+    }
+    match audio::iniciar(estado.traducao.clone(), cfg.microfone, cfg.saida) {
+        Ok((captura, avisos)) => {
+            *estado.captura_traducao.lock().map_err(erro)? = Some(captura);
+            Ok(json!({ "ok": true, "avisos": avisos }))
+        }
+        Err(e) => {
+            let _ = estado.traducao.parar().await;
+            Ok(json!({ "ok": false, "erro": e }))
+        }
+    }
+}
+
+#[tauri::command]
+async fn traducao_parar(estado: State<'_, Estado>, enviar: bool) -> Result<Value, String> {
+    // fechar a captura primeiro: encerra as threads de áudio antes de traduzir o que sobrou
+    let captura = estado.captura_traducao.lock().map_err(erro)?.take();
+    drop(captura);
+    Ok(match estado.traducao.parar().await {
+        Ok(()) => {
+            if enviar && estado.traducao.tem_texto() {
+                // o envio segue em segundo plano; a tela acompanha pelo evento traducao:email
+                let t = estado.traducao.clone();
+                tauri::async_runtime::spawn(async move { t.enviar_por_email().await });
+            }
+            json!({ "ok": true })
+        }
+        Err(e) => json!({ "ok": false, "erro": e.to_string() }),
+    })
+}
+
+#[tauri::command]
+async fn traducao_enviar_email(estado: State<'_, Estado>) -> Result<Value, String> {
+    if !estado.traducao.tem_texto() {
+        return Ok(json!({ "ok": false, "erro": "Ainda não há nada traduzido para enviar." }));
+    }
+    let t = estado.traducao.clone();
+    tauri::async_runtime::spawn(async move { t.enviar_por_email().await });
+    Ok(json!({ "ok": true }))
+}
+
+#[tauri::command]
+fn traducao_limpar(estado: State<'_, Estado>) {
+    estado.traducao.limpar();
 }
 
 // ---- pendências ----
@@ -613,11 +699,21 @@ fn main() {
                 (c.openai_key, c.transcricao_model)
             }))
             .com_idioma(Arc::new(move || cfg_idioma.obter().idioma));
+            let transcritor = Arc::new(TranscritorRoteador::new(nuvem, locais.clone(), ler_config.clone()));
+            let resumidor = Arc::new(ResumidorRoteador::new(locais.clone(), ler_config.clone()));
+            let traducao = Arc::new(Traducao::new(DependenciasTraducao {
+                transcritor: transcritor.clone(),
+                resumidor: resumidor.clone(),
+                config: ler_config.clone(),
+                emitir: emitir.clone(),
+                agora: Arc::new(busca_core::agora_ms),
+                remetente: Arc::new(SmtpGmail),
+            }));
             let reuniao = Arc::new(Reuniao::new(Dependencias {
                 store: store.clone(),
                 usuario: USUARIO.into(),
-                transcritor: Arc::new(TranscritorRoteador::new(nuvem, locais.clone(), ler_config.clone())),
-                resumidor: Arc::new(ResumidorRoteador::new(locais.clone(), ler_config.clone())),
+                transcritor,
+                resumidor,
                 remetente: Arc::new(SmtpGmail),
                 config: ler_config,
                 emitir,
@@ -639,7 +735,7 @@ fn main() {
             if let Some(docs) = std::fs::read_to_string(&arquivo_documentos).ok().and_then(|t| serde_json::from_str::<Vec<Documento>>(&t).ok()) {
                 let _ = reuniao.definir_documentos(docs);
             }
-            app.manage(Estado { store, config, reuniao, drive, locais, captura: Mutex::new(None), arquivo_material, arquivo_documentos });
+            app.manage(Estado { store, config, reuniao, drive, locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos });
 
             let atalho = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
             let atalho_reuniao = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR);
@@ -698,6 +794,7 @@ fn main() {
             abrir_link, drive_estado, drive_conectar, drive_desconectar, drive_buscar, drive_anexar,
             locais_listar, local_baixar, local_cancelar, local_apagar, local_testar,
             perguntar, reuniao_iniciar, reuniao_parar, reuniao_reenviar,
+            traducao_idiomas, traducao_iniciar, traducao_parar, traducao_enviar_email, traducao_limpar,
             pendencias_listar, pendencia_marcar,
             conversa_apagar, conversas_apagar_todas, conversas_apagar_antigas,
             exportar_texto, exportar_arquivo, backup_exportar

@@ -60,6 +60,11 @@ impl Segmentador {
         self
     }
 
+    pub fn com_silencio_ms(mut self, v: f64) -> Self {
+        self.silencio_ms = v;
+        self
+    }
+
     fn zerar(&mut self) {
         self.trechos.clear();
         self.amostras = 0;

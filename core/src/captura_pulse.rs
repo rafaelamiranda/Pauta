@@ -2,7 +2,7 @@
 //! Microfone: a fonte escolhida. Som do computador: o "monitor" da saída escolhida.
 //! O `parec` já entrega PCM 16 bits, 16 kHz, mono, então não precisa converter.
 
-use crate::meeting::{Fonte, Reuniao};
+use crate::meeting::{Fonte, Receptor};
 use crate::resample::TRECHO;
 use std::io::Read;
 use std::process::{Child, Command, Stdio};
@@ -81,7 +81,7 @@ fn decodificar(bytes: &[u8]) -> (Vec<i16>, f32) {
     (pcm, nivel)
 }
 
-fn abrir(fonte: &str, qual: Fonte, reuniao: Arc<Reuniao>) -> Result<(Child, std::thread::JoinHandle<()>), String> {
+fn abrir(fonte: &str, qual: Fonte, reuniao: Arc<dyn Receptor>) -> Result<(Child, std::thread::JoinHandle<()>), String> {
     let mut filho = Command::new("parec")
         .args([&format!("--device={fonte}"), "--format=s16le", "--rate=16000", "--channels=1", "--latency-msec=50"])
         .stdin(Stdio::null())
@@ -110,7 +110,7 @@ fn abrir(fonte: &str, qual: Fonte, reuniao: Arc<Reuniao>) -> Result<(Child, std:
     Ok((filho, fio))
 }
 
-pub fn iniciar(reuniao: Arc<Reuniao>, microfone: String, saida: String) -> Result<(Captura, Vec<String>), String> {
+pub fn iniciar(reuniao: Arc<dyn Receptor>, microfone: String, saida: String) -> Result<(Captura, Vec<String>), String> {
     let (mics, saidas) = dispositivos();
     let mut avisos = Vec::new();
     let mut cap = Captura { filhos: vec![], fios: vec![] };

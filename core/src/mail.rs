@@ -25,6 +25,10 @@ pub struct Envio {
 #[async_trait]
 pub trait Remetente: Send + Sync {
     async fn enviar(&self, envio: Envio) -> Result<()>;
+    /// Envia uma mensagem já montada (usado pela tradução).
+    async fn enviar_montado(&self, _usuario: &str, _senha: &str, _destinatario: &str, _m: Montado) -> Result<()> {
+        Err(anyhow!("Envio não disponível."))
+    }
 }
 
 pub struct Montado {
@@ -80,6 +84,26 @@ pub fn montar_email(d: &DadosEmail) -> Montado {
     }
 }
 
+/// E-mail da tradução: cada fala traduzida, com o original logo abaixo. `linhas` são (original, tradução).
+pub fn montar_email_traducao(origem: &str, destino: &str, data: &str, linhas: &[(String, String)]) -> Montado {
+    let mut texto = vec![format!("Tradução de {origem} para {destino}"), String::new()];
+    let mut html = format!("<h3>Tradução de {} para {}</h3>", esc(origem), esc(destino));
+    let mut anexo = Vec::new();
+    for (original, traducao) in linhas {
+        let t = if traducao.is_empty() { "(sem tradução)" } else { traducao.as_str() };
+        texto.extend([t.to_string(), format!("({original})"), String::new()]);
+        html += &format!("<p>{}<br><span style=\"color:#666;font-size:90%\">{}</span></p>", esc(t), esc(original));
+        anexo.extend([t.to_string(), format!("  Original: {original}"), String::new()]);
+    }
+    Montado {
+        assunto: format!("Tradução: {origem} para {destino} ({data})"),
+        texto: texto.join("\n"),
+        html,
+        anexo_nome: format!("traducao-{data}.txt"),
+        anexo: anexo.join("\n"),
+    }
+}
+
 /// Gmail por SMTP com TLS (porta 465).
 pub struct SmtpGmail;
 
@@ -89,18 +113,24 @@ impl Remetente for SmtpGmail {
         if e.usuario.is_empty() || e.senha.is_empty() || e.destinatario.is_empty() {
             return Err(anyhow!("E-mail não configurado (Gmail, senha de app e destinatário)."));
         }
-        let m = montar_email(&e.dados);
+        self.enviar_montado(&e.usuario, &e.senha, &e.destinatario, montar_email(&e.dados)).await
+    }
+
+    async fn enviar_montado(&self, usuario: &str, senha: &str, destinatario: &str, m: Montado) -> Result<()> {
+        if usuario.is_empty() || senha.is_empty() || destinatario.is_empty() {
+            return Err(anyhow!("E-mail não configurado (Gmail, senha de app e destinatário)."));
+        }
         let corpo = MultiPart::alternative()
             .singlepart(SinglePart::plain(m.texto))
             .singlepart(SinglePart::html(m.html));
         let anexo = Attachment::new(m.anexo_nome).body(m.anexo, ContentType::parse("text/plain; charset=utf-8")?);
         let msg = Message::builder()
-            .from(e.usuario.parse().map_err(|_| anyhow!("Endereço do Gmail inválido."))?)
-            .to(e.destinatario.parse().map_err(|_| anyhow!("Endereço do destinatário inválido."))?)
+            .from(usuario.parse().map_err(|_| anyhow!("Endereço do Gmail inválido."))?)
+            .to(destinatario.parse().map_err(|_| anyhow!("Endereço do destinatário inválido."))?)
             .subject(m.assunto)
             .multipart(MultiPart::mixed().multipart(corpo).singlepart(anexo))?;
         let envio = AsyncSmtpTransport::<Tokio1Executor>::relay("smtp.gmail.com")?
-            .credentials(Credentials::new(e.usuario, e.senha))
+            .credentials(Credentials::new(usuario.to_string(), senha.to_string()))
             .build();
         envio.send(msg).await.map_err(|er| anyhow!("Falha no envio: {er}"))?;
         Ok(())
@@ -134,6 +164,15 @@ mod testes {
     fn sem_resumo_explica_o_motivo() {
         let m = montar_email(&dados(None, Some("sem chave")));
         assert!(m.texto.contains("Não foi possível gerar o resumo: sem chave"));
+    }
+
+    #[test]
+    fn email_da_traducao_traz_traducao_e_original_sem_html_solto() {
+        let m = montar_email_traducao("inglês", "português", "13-10-2026", &[("Good <b>".to_string(), "Bom dia".to_string()), ("Bye".to_string(), String::new())]);
+        assert_eq!(m.assunto, "Tradução: inglês para português (13-10-2026)");
+        assert!(m.html.contains("Bom dia") && m.html.contains("Good &lt;b&gt;") && !m.html.contains("<b>"));
+        assert!(m.texto.contains("Bom dia\n(Good <b>)") && m.texto.contains("(sem tradução)"));
+        assert!(m.anexo.contains("  Original: Bye"));
     }
 
     #[tokio::test]
