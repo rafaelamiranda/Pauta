@@ -750,6 +750,33 @@ fn posicionar(j: &tauri::WebviewWindow) {
     }
 }
 
+/// Linux: a cada poucos segundos vê se Zoom, Teams ou um navegador passou a gravar o microfone e, se a
+/// pessoa ligou a opção, mostra a janela com a sugestão de iniciar. Avisa uma vez por chamada: só de novo
+/// depois que o app para de usar o microfone (ou é outro app).
+#[cfg(target_os = "linux")]
+fn vigiar_reunioes(h: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut ultimo: Option<&'static str> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(4));
+            let estado = h.state::<Estado>();
+            if !estado.config.detectar_reuniao() {
+                ultimo = None;
+                continue;
+            }
+            let achado = busca_core::deteccao::consultar();
+            let ocupado = estado.capturando().unwrap_or(true);
+            if let (Some(app), false, true) = (achado, ocupado, achado != ultimo) {
+                if let Some(j) = h.get_webview_window("main") {
+                    mostrar(&j);
+                }
+                let _ = h.emit("reuniao:detectada", json!({ "app": app }));
+            }
+            ultimo = achado;
+        }
+    });
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -840,6 +867,8 @@ fn main() {
                 });
             }
             app.manage(Estado { store, config, reuniao, drive, chatgpt, significado, atualizacao: Mutex::new(None), locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos });
+            #[cfg(target_os = "linux")]
+            vigiar_reunioes(app.handle().clone());
 
             if verificar_ao_abrir {
                 // espera o app terminar de abrir; se houver versão nova, a tela mostra um aviso

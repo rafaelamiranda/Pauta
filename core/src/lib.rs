@@ -4,6 +4,7 @@ pub mod baixar;
 pub mod chatgpt;
 #[cfg(target_os = "linux")]
 pub mod captura_pulse;
+pub mod deteccao;
 pub mod drive;
 pub mod exportar;
 pub mod falantes;

@@ -258,6 +258,7 @@
   async function iniciar(porAtalho = false) {
     if (fase === 'iniciando' || fase === 'gravando' || fase === 'finalizando') return;
     fase = 'iniciando';
+    esconderSugestao();
     corpo.replaceChildren(el('p', 'estado', 'Iniciando o motor de transcrição...'));
     await window.Ajustes.recarregar();
     const r = await window.busca.iniciarReuniao();
@@ -322,6 +323,21 @@
   window.busca.aoAtalhoReuniao(() => {
     if (fase === 'gravando') finalizar();
     else if (fase === 'inicio' || fase === 'final') iniciar(true);
+  });
+
+  // Sugestão de iniciar quando um app de chamada passa a usar o microfone (Ajustes › Detectar reunião).
+  const sugestao = document.getElementById('sugestao-reuniao');
+  const esconderSugestao = () => { sugestao.hidden = true; };
+  window.busca.aoReuniaoDetectada(({ app }) => {
+    if (fase !== 'inicio' && fase !== 'final') return;
+    document.getElementById('sugestao-texto').textContent = `Parece que uma reunião começou em ${app}. Quer transcrever?`;
+    sugestao.hidden = false;
+  });
+  document.getElementById('sugestao-dispensar').addEventListener('click', esconderSugestao);
+  document.getElementById('sugestao-iniciar').addEventListener('click', () => {
+    esconderSugestao();
+    document.querySelector('.aba[data-vista="reuniao"]').click();
+    iniciar(true);
   });
 
   window.busca.aoNivel(({ fonte, valor }) => {

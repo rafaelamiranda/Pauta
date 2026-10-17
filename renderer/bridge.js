@@ -79,6 +79,7 @@
     exportarBackup: () => invoke('backup_exportar'),
 
     aoAtalhoReuniao: ouvir('atalho:reuniao'),
+    aoReuniaoDetectada: ouvir('reuniao:detectada'),
     aoNivel: ouvir('reuniao:nivel'),
     aoEstado: ouvir('reuniao:estado'),
     aoFalar: ouvir('reuniao:fala'),

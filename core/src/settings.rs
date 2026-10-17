@@ -53,6 +53,8 @@ pub struct Config {
     pub verificar_atualizacoes: bool,
     /// Achar conversas pelo sentido (embeddings da OpenAI), além do texto digitado.
     pub busca_significado: bool,
+    /// Sugere iniciar a reunião quando Zoom, Teams ou o navegador passam a usar o microfone (Linux).
+    pub detectar_reuniao: bool,
 }
 
 impl Default for Config {
@@ -82,6 +84,7 @@ impl Default for Config {
             identificar_falantes: false,
             verificar_atualizacoes: true,
             busca_significado: true,
+            detectar_reuniao: false,
         }
     }
 }
@@ -147,6 +150,11 @@ impl Configuracoes {
         self.segredos.ler(SEGREDO_OPENAI).unwrap_or_default()
     }
 
+    /// A detecção de reunião está ligada? Lê só o arquivo (roda a cada poucos segundos, sem tocar no cofre).
+    pub fn detectar_reuniao(&self) -> bool {
+        serde_json::from_value::<Config>(self.ler_arquivo()).unwrap_or_default().detectar_reuniao
+    }
+
     /// Versão para a tela: nunca devolve o segredo, só se ele existe.
     pub fn para_tela(&self) -> Value {
         let c = self.obter();
@@ -178,6 +186,7 @@ impl Configuracoes {
             "identificarFalantes": c.identificar_falantes,
             "verificarAtualizacoes": c.verificar_atualizacoes,
             "buscaSignificado": c.busca_significado,
+            "detectarReuniao": c.detectar_reuniao,
         })
     }
 
@@ -203,6 +212,7 @@ impl Configuracoes {
         if let Some(v) = novos["identificarFalantes"].as_bool() { c.identificar_falantes = v; }
         if let Some(v) = novos["verificarAtualizacoes"].as_bool() { c.verificar_atualizacoes = v; }
         if let Some(v) = novos["buscaSignificado"].as_bool() { c.busca_significado = v; }
+        if let Some(v) = novos["detectarReuniao"].as_bool() { c.detectar_reuniao = v; }
         let id_valido = |id: &str, tipo: Tipo| crate::locais::CATALOGO.iter().any(|m| m.id == id && m.tipo == tipo);
         if let Some(v) = texto("whisperLocal").filter(|v| id_valido(v, Tipo::Whisper)) { c.whisper_local = v; }
         if let Some(v) = texto("llmLocal").filter(|v| id_valido(v, Tipo::Llm)) { c.llm_local = v; }
@@ -271,6 +281,9 @@ mod testes {
         assert_eq!(s.chave_significado(), "sk-1");
         s.salvar(&json!({"buscaSignificado": false})).unwrap();
         assert!(s.chave_significado().is_empty());
+        assert!(!s.detectar_reuniao(), "desligada por padrão");
+        s.salvar(&json!({"detectarReuniao": true})).unwrap();
+        assert!(s.detectar_reuniao() && s.para_tela()["detectarReuniao"] == true);
         let _ = std::fs::remove_dir_all(pasta);
     }
 

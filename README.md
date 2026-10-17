@@ -38,6 +38,7 @@ Os dois modelos, o idioma, o microfone e a saída de áudio podem ser trocados n
 - **Identificação de falantes (opcional):** nos Ajustes, "Separar as pessoas em Outros". No som do computador, cada trecho vai para o modelo `gpt-4o-transcribe-diarize`, e as vozes aparecem como "Pessoa 1", "Pessoa 2" (até 4). Para manter o mesmo nome entre um trecho e outro, o app guarda de 2 a 10 segundos da voz de cada pessoa e envia como referência nos trechos seguintes. Isso põe os trechos do som do computador numa fila, então a transcrição pode atrasar mais. Se a pessoa falou menos de 2 segundos, ou já são 4 vozes, o texto fica como "Outros". O resumo e o e-mail usam esses nomes. Não vale na transcrição local, e o microfone continua sendo "Eu".
 - **Material de apoio:** texto colado, documentos anexados (arquivo do computador ou Google Drive) e materiais salvos por cliente ou projeto, para reutilizar sem colar de novo.
 - **Busca por significado:** além das conversas que têm a palavra digitada, a busca mostra até 10 conversas de sentido parecido (ex.: "faturamento" acha uma reunião que fala de "receita"), marcadas com "Parecido:" e o trecho mais próximo. O app divide cada conversa encerrada em trechos de cerca de 1.200 caracteres, pede um embedding de cada um à OpenAI e guarda no banco local; o cálculo de semelhança é feito no computador. Conversas já existentes são indexadas em segundo plano ao abrir o app, e as novas na próxima busca. **Só vale com a chave da API** (o login do ChatGPT não cobre embeddings) e **com a análise fora do modo local**, porque manda o texto das conversas à OpenAI; dá para desligar em Ajustes › Busca. Sem chave, sem internet ou desligada, a busca é só por palavra. Não foi testada com a API real, só com servidor simulado; o corte de semelhança (0,30) é uma estimativa e pode precisar de ajuste.
+- **Detectar reunião sozinho (Linux, opcional):** em Ajustes › Detectar reunião. A cada 4 segundos o app consulta quais programas estão gravando o microfone (`pactl list source-outputs`). Se o Zoom, o Teams ou um navegador (Meet, Teams ou Zoom na web) começa a gravar, a janela aparece com "Parece que uma reunião começou em..." e os botões **Iniciar reunião** e **Agora não**. Avisa uma vez por chamada e nada começa sem o clique. Não lê áudio nem título de janela, então pelo navegador não dá para saber se é Meet: qualquer uso do microfone (ditado por voz, por exemplo) também avisa. Desligada por padrão. **Windows ainda não tem essa detecção.** Testada só com o detector sobre saídas de exemplo e com a captura do próprio sistema, não com uma chamada real.
 - **Pendências:** aba com as pendências de todas as reuniões, com marcar como feita.
 - **Conversas:** copiar ou salvar em Markdown (pasta Downloads), apagar uma conversa, apagar tudo, apagar sozinho reuniões com mais de N dias, e salvar uma cópia do banco.
 
@@ -220,7 +221,7 @@ As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, 
 |---|---|---|
 | Vários destinatários e outros provedores de e-mail | Hoje é um destinatário e Gmail. | Médio |
 | Salvar no Notion, Google Drive ou Obsidian | O app estudado como referência tem módulos com os nomes `obsidian` e `mcp-oauth`. Só vi os nomes dos arquivos, não analisei o que fazem. | Alto |
-| Detectar reunião sozinho | Sugerir iniciar quando o Meet, Teams ou Zoom abrir. | Alto |
+| Detectar reunião sozinho no Windows | No Linux já existe. No Windows exige listar as sessões de áudio do WASAPI. | Alto |
 | Criar eventos de acompanhamento | Transformar pendências com prazo em eventos na agenda. | Alto |
 
 ### Privacidade e distribuição
@@ -241,11 +242,11 @@ As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, 
 
 ### Por onde começar
 
-Já feitos: apagar conversas, exportar e copiar, escolher o microfone com medidor de volume, materiais salvos por cliente ou projeto, lista geral de pendências, anexar documentos (arquivo e Google Drive), transcrição local e análise local com botão de download, dica de termos na transcrição, resposta aparecendo aos poucos e identificação de falantes e busca por significado.
+Já feitos: apagar conversas, exportar e copiar, escolher o microfone com medidor de volume, materiais salvos por cliente ou projeto, lista geral de pendências, anexar documentos (arquivo e Google Drive), transcrição local e análise local com botão de download, dica de termos na transcrição, resposta aparecendo aos poucos e identificação de falantes, busca por significado e detectar reunião sozinho (Linux).
 
 O que falta, nesta ordem:
 
-1. Detectar reunião sozinho.
+1. Detectar reunião sozinho no Windows.
 
 ## Limitações conhecidas
 

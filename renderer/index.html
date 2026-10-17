@@ -81,6 +81,9 @@
   .abas { display: flex; gap: 4px; padding: 10px 12px 0; -webkit-app-region: drag; }
   .abas > * { -webkit-app-region: no-drag; }
   .aba { background: none; border: 0; color: var(--suave); font: inherit; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+  .sugestao { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 8px 12px 0; padding: 8px 12px; border-radius: 10px; background: var(--item); font-size: 13px; }
+  .sugestao[hidden] { display: none; }
+  .sugestao span { flex: 1; min-width: 160px; }
   .aviso-atualizacao { background: var(--destaque); color: #fff; border: 0; font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; cursor: pointer; margin-left: 8px; }
   .aba[aria-selected="true"] { background: var(--item); color: var(--texto); font-weight: 600; }
   .gravando-ponto { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; margin-right: 6px; }
@@ -218,6 +221,12 @@
       <button class="icone aba-fechar" id="fechar" type="button" title="Fechar o app" aria-label="Fechar o app"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
 
+    <div class="sugestao" id="sugestao-reuniao" role="alert" hidden>
+      <span id="sugestao-texto"></span>
+      <button class="botao" type="button" id="sugestao-iniciar">Iniciar reunião</button>
+      <button class="botao sec" type="button" id="sugestao-dispensar">Agora não</button>
+    </div>
+
     <section class="vista ativa" id="v-conversas" role="search">
       <div class="topo" data-tauri-drag-region>
         <svg class="lupa" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
@@ -290,6 +299,9 @@
         <h2>Modelos no computador</h2>
         <div id="locais-corpo"></div>
         </div>
+        <h2>Detectar reunião</h2>
+        <label><input type="checkbox" id="detectarReuniao">Sugerir iniciar quando o Zoom, o Teams ou o navegador (Meet) usar o microfone</label>
+        <p class="nota">Só no Linux, por enquanto. O app olha, a cada poucos segundos, quais programas estão gravando o microfone (nada é gravado nem enviado), e mostra a janela com a sugestão. Pelo navegador, qualquer chamada ou ditado por voz também conta. Nada começa sem você clicar.</p>
         <h2>Busca</h2>
         <label><input type="checkbox" id="buscaSignificado">Achar conversas também pelo sentido, não só pela palavra</label>
         <p class="nota">Manda o texto das conversas à OpenAI (modelo de embeddings) para comparar o sentido. Precisa da chave da API e não vale com a análise local. Desligada ou sem chave, a busca é só por palavra.</p>
