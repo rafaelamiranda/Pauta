@@ -197,7 +197,7 @@ Roda os testes do `core` (busca, falas, resumo, e-mail, reunião de ponta a pont
 
 ## Ideias de novas funcionalidades
 
-As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, não medida.
+As ideias marcadas com ✅ já estão implementadas; as demais não. O esforço é uma estimativa minha, não medida.
 
 ### Material de apoio
 
@@ -229,7 +229,7 @@ As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, 
 | Ideia | Para que serve | Esforço |
 |---|---|---|
 | Assinatura digital do .exe | Tira o aviso do SmartScreen. Exige comprar um certificado. | Baixo (custo em dinheiro) |
-| Atualização automática | Ler uma nova versão de um endereço e instalar. | Médio |
+| ✅ Atualização automática | Ler uma nova versão de um endereço e instalar. | Médio |
 
 ### Ideias para os modelos locais
 
@@ -242,11 +242,26 @@ As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, 
 
 ### Por onde começar
 
-Já feitos: apagar conversas, exportar e copiar, escolher o microfone com medidor de volume, materiais salvos por cliente ou projeto, lista geral de pendências, anexar documentos (arquivo e Google Drive), transcrição local e análise local com botão de download, dica de termos na transcrição, resposta aparecendo aos poucos e identificação de falantes, busca por significado e detectar reunião sozinho (Linux).
+Já feitos:
+
+- ✅ Apagar conversas
+- ✅ Exportar e copiar
+- ✅ Escolher o microfone com medidor de volume
+- ✅ Materiais salvos por cliente ou projeto
+- ✅ Lista geral de pendências
+- ✅ Anexar documentos (arquivo e Google Drive)
+- ✅ Transcrição local e análise local com botão de download
+- ✅ Dica de termos na transcrição
+- ✅ Resposta aparecendo aos poucos
+- ✅ Identificação de falantes
+- ✅ Busca por significado
+- ✅ Detectar reunião sozinho (Linux)
+- ✅ Login com o ChatGPT
+- ✅ Atualização automática, com aviso ao abrir o app
 
 O que falta, nesta ordem:
 
-1. Detectar reunião sozinho no Windows.
+1. ⬜ Detectar reunião sozinho no Windows.
 
 ## Limitações conhecidas
 
