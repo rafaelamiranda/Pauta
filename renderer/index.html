@@ -128,6 +128,14 @@
   .resposta:empty { display: none; }
   details { margin-top: 12px; }
   summary { cursor: pointer; font-weight: 600; font-size: 15px; }
+  /* seções de Ajustes (accordion) */
+  details.secao { border: 1px solid var(--borda); border-radius: 12px; padding: 0 14px; margin-top: 8px; }
+  details.secao[hidden] { display: none; }
+  details.secao > summary { padding: 10px 0; margin: 0 -14px; padding-left: 14px; padding-right: 14px; border-radius: 12px; list-style: none; display: flex; justify-content: space-between; align-items: center; }
+  details.secao > summary::-webkit-details-marker { display: none; }
+  details.secao > summary::after { content: ""; width: 7px; height: 7px; border-right: 2px solid var(--suave); border-bottom: 2px solid var(--suave); transform: rotate(45deg); transition: transform 0.15s; margin-right: 4px; }
+  details.secao[open] > summary::after { transform: rotate(-135deg); }
+  details.secao[open] { padding-bottom: 12px; }
   .conteudo input[type=checkbox] { margin-right: 6px; }
   .conteudo select { width: 100%; margin-top: 4px; }
   .linha-form select { width: auto; flex: 1; min-width: 160px; margin-top: 0; }
@@ -252,7 +260,8 @@
 
     <section class="vista" id="v-ajustes">
       <form class="conteudo" id="form-ajustes" autocomplete="off">
-        <h2>Inteligência artificial</h2>
+        <details class="secao" open>
+        <summary>Inteligência artificial</summary>
         <p class="nota">Escolha onde o app transcreve e resume as reuniões.</p>
         <div class="modos" role="radiogroup" aria-label="Onde processar a reunião">
           <label class="modo"><input type="radio" name="modoIA" value="openai"><span class="modo-corpo"><strong>OpenAI (internet)</strong><span>Mais rápido e com melhor qualidade. O áudio e o texto são enviados à OpenAI. Precisa de chave da API.</span></span></label>
@@ -260,8 +269,9 @@
           <label class="modo"><input type="radio" name="modoIA" value="misto"><span class="modo-corpo"><strong>Misto</strong><span>Você escolhe por etapa: transcrição e análise.</span></span></label>
         </div>
         <p class="estado" id="modo-resumo"></p>
-        <div id="bloco-openai">
-        <h2>OpenAI</h2>
+        </details>
+        <details class="secao" id="bloco-openai" open>
+        <summary>OpenAI</summary>
         <h3>Conta do ChatGPT</h3>
         <p class="nota">Entre com a sua assinatura do ChatGPT (Plus, Pro, Team...) em vez de pagar pela API. Vale para resumo, perguntas e tradução, e tem prioridade sobre a chave. Não vale para transcrever o áudio: para isso use a chave da API ou a transcrição no computador. O login usa o mesmo caminho do Codex CLI da OpenAI, que não é uma API oficial para outros aplicativos: pode mudar ou parar de funcionar, e o uso conta no limite da sua assinatura.</p>
         <div class="acoes"><span id="chatgpt-estado" class="estado"></span><button class="botao sec" type="button" id="chatgpt-botao"></button></div>
@@ -275,14 +285,17 @@
         <label>Modelo de transcrição<select id="transcricaoModel"></select></label>
         <p class="nota" id="transcricaoModel-preco"></p>
         <p class="nota">Preços em dólar, de referência: vieram de sites de terceiros, não da página oficial da OpenAI, e mudam. Confira em platform.openai.com/docs/pricing antes de decidir. A estimativa da análise supõe uma reunião de 1 hora com cerca de 15 mil tokens de texto lidos e 1 mil escritos; reuniões maiores custam mais.</p>
-        </div>
-        <h2>E-mail (Gmail)</h2>
+        </details>
+        <details class="secao">
+        <summary>E-mail (Gmail)</summary>
         <label>Seu Gmail (quem envia)<input type="email" id="smtpUser"></label>
         <label>Senha de app do Gmail<input type="password" id="smtpPass"></label>
         <p class="nota">Para gerar a senha, acesse <a href="https://myaccount.google.com/apppasswords" class="link-externo">myaccount.google.com/apppasswords</a> (exige verificação em duas etapas).</p>
         <label>Enviar a transcrição para<input type="email" id="destinatario"></label>
         <label><input type="checkbox" id="enviarAutomatico">Enviar sozinho ao finalizar a reunião</label>
-        <h2>Áudio e idioma</h2>
+        </details>
+        <details class="secao">
+        <summary>Áudio e idioma</summary>
         <label>Microfone<select id="microfone"></select></label>
         <label>Saída de áudio (som do computador)<select id="saida"></select></label>
         <label>Idioma da reunião (código, como pt, en, es)<input type="text" id="idioma" maxlength="5"></label>
@@ -290,25 +303,35 @@
         <p class="nota">Ajuda a transcrever nomes próprios e siglas do material de apoio. Se notar frases estranhas na transcrição, desligue.</p>
         <label><input type="checkbox" id="identificarFalantes">Separar as pessoas em "Outros" (Pessoa 1, Pessoa 2...)</label>
         <p class="nota">Só com a transcrição da OpenAI (não vale na transcrição local). Usa um modelo próprio, mais caro, só no som do computador. Reconhece até 4 vozes e pode errar quando duas pessoas se parecem.</p>
-        <h2>Google Drive</h2>
+        </details>
+        <details class="secao">
+        <summary>Google Drive</summary>
         <p class="nota" id="drive-ajuda">Para anexar documentos do Drive, crie um ID de cliente do tipo "App para computador" no Google Cloud (APIs e serviços, Credenciais), ative a API do Google Drive e cole os dois valores abaixo. Veja o passo a passo no README.</p>
         <label>ID do cliente<input type="text" id="driveClientId"></label>
         <label>Segredo do cliente<input type="password" id="driveClientSecret"></label>
         <div class="acoes"><span id="drive-estado" class="estado"></span><button class="botao sec" type="button" id="drive-botao"></button></div>
-        <div id="bloco-locais">
-        <h2>Modelos no computador</h2>
+        </details>
+        <details class="secao" id="bloco-locais">
+        <summary>Modelos no computador</summary>
         <div id="locais-corpo"></div>
-        </div>
-        <h2>Detectar reunião</h2>
+        </details>
+        <details class="secao">
+        <summary>Detectar reunião</summary>
         <label><input type="checkbox" id="detectarReuniao">Sugerir iniciar quando o Zoom, o Teams ou o navegador (Meet) usar o microfone</label>
         <p class="nota">Só no Linux, por enquanto. O app olha, a cada poucos segundos, quais programas estão gravando o microfone (nada é gravado nem enviado), e mostra a janela com a sugestão. Pelo navegador, qualquer chamada ou ditado por voz também conta. Nada começa sem você clicar.</p>
-        <h2>Busca</h2>
+        </details>
+        <details class="secao">
+        <summary>Busca</summary>
         <label><input type="checkbox" id="buscaSignificado">Achar conversas também pelo sentido, não só pela palavra</label>
         <p class="nota">Manda o texto das conversas à OpenAI (modelo de embeddings) para comparar o sentido. Precisa da chave da API e não vale com a análise local. Desligada ou sem chave, a busca é só por palavra.</p>
-        <h2>Atualizações</h2>
+        </details>
+        <details class="secao">
+        <summary>Atualizações</summary>
         <label><input type="checkbox" id="verificarAtualizacoes">Procurar versão nova ao abrir o app</label>
         <div class="acoes"><span id="atualizacao-estado" class="estado"></span><button class="botao sec" type="button" id="atualizacao-botao">Verificar agora</button></div>
-        <h2>Privacidade</h2>
+        </details>
+        <details class="secao">
+        <summary>Privacidade</summary>
         <label>Apagar sozinho reuniões com mais de (dias, 0 = nunca)<input type="text" id="apagarAposDias" inputmode="numeric"></label>
         <div class="acoes">
           <button class="botao sec" type="button" id="backup">Salvar cópia do banco em Downloads</button>
@@ -316,6 +339,7 @@
           <button class="botao perigo" type="button" id="apagar-tudo">Apagar todas as conversas</button>
         </div>
         <p class="estado" id="dados-estado"></p>
+        </details>
         <div class="acoes"><button class="botao" type="submit">Salvar</button><span id="ajustes-estado" class="estado"></span></div>
         <p class="nota">Chave e senha ficam criptografadas neste computador. Para o Gmail, crie uma senha de app em myaccount.google.com/apppasswords (exige verificação em duas etapas).</p>
       </form>
