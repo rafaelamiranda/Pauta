@@ -252,7 +252,11 @@
       botao.disabled = false;
     }
   });
-  $('aviso-atualizacao').addEventListener('click', () => document.querySelector('.aba[data-vista="ajustes"]').click());
+  // Vai para Ajustes (onde aparece o progresso) e faz o mesmo que o botão de lá.
+  $('aviso-atualizacao').addEventListener('click', () => {
+    document.querySelector('.aba[data-vista="ajustes"]').click();
+    $('atualizacao-botao').click();
+  });
   window.busca.aoAtualizacaoDisponivel(mostrarAtualizacao);
   window.busca.aoProgressoAtualizacao(({ baixado, total }) => {
     $('atualizacao-estado').textContent = total ? `Baixando a atualização... ${Math.min(100, Math.round((baixado / total) * 100))}%` : 'Baixando a atualização...';
