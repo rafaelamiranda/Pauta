@@ -1,6 +1,7 @@
 //! Lógica do app de reuniões, sem dependência de interface.
 
 pub mod baixar;
+pub mod chatgpt;
 #[cfg(target_os = "linux")]
 pub mod captura_pulse;
 pub mod drive;

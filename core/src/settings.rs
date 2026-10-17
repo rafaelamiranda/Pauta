@@ -18,6 +18,11 @@ pub trait Segredos: Send + Sync {
 pub struct Config {
     pub openai_key: String,
     pub openai_model: String,
+    /// Modelo usado quando a pessoa entra com a conta do ChatGPT (assinatura) em vez da chave da API.
+    pub chatgpt_model: String,
+    /// Há login do ChatGPT guardado no cofre (não vai para o arquivo).
+    #[serde(skip)]
+    pub chatgpt_conectado: bool,
     pub transcricao_model: String,
     pub smtp_user: String,
     pub smtp_pass: String,
@@ -44,6 +49,8 @@ pub struct Config {
     pub dica_termos: bool,
     /// Separa os participantes em "Outros" (só com a transcrição da OpenAI).
     pub identificar_falantes: bool,
+    /// Procura versão nova no GitHub ao abrir o app.
+    pub verificar_atualizacoes: bool,
 }
 
 impl Default for Config {
@@ -51,6 +58,8 @@ impl Default for Config {
         Self {
             openai_key: String::new(),
             openai_model: "gpt-4o-mini".into(),
+            chatgpt_model: "gpt-5".into(),
+            chatgpt_conectado: false,
             transcricao_model: "gpt-4o-transcribe".into(),
             smtp_user: String::new(),
             smtp_pass: String::new(),
@@ -69,10 +78,12 @@ impl Default for Config {
             aceleracao: "cpu".into(),
             dica_termos: true,
             identificar_falantes: false,
+            verificar_atualizacoes: true,
         }
     }
 }
 
+pub(crate) const SEGREDO_CHATGPT: &str = "chatgptAuth";
 const SEGREDO_OPENAI: &str = "openaiKey";
 const SEGREDO_SMTP: &str = "smtpPass";
 const SEGREDO_DRIVE: &str = "driveClientSecret";
@@ -110,6 +121,7 @@ impl Configuracoes {
         let mut c: Config = serde_json::from_value(self.ler_arquivo()).unwrap_or_default();
         c.openai_key = self.segredos.ler(SEGREDO_OPENAI).unwrap_or_default();
         c.smtp_pass = self.segredos.ler(SEGREDO_SMTP).unwrap_or_default();
+        c.chatgpt_conectado = self.segredos.ler(SEGREDO_CHATGPT).is_some_and(|t| !t.is_empty());
         c.drive_client_secret = self.segredos.ler(SEGREDO_DRIVE).unwrap_or_default();
         if let Some((id, segredo)) = &self.drive_embutido {
             c.drive_client_id = id.clone();
@@ -127,6 +139,9 @@ impl Configuracoes {
         json!({
             "openaiKey": "", "openaiKeyDefinida": !c.openai_key.is_empty(),
             "openaiModel": c.openai_model,
+            "chatgptModel": c.chatgpt_model,
+            "chatgptConectado": c.chatgpt_conectado,
+            "chatgptConta": self.segredos.ler(SEGREDO_CHATGPT).and_then(|t| crate::chatgpt::conta_de(&t)).unwrap_or_default(),
             "transcricaoModel": c.transcricao_model,
             "smtpUser": c.smtp_user,
             "smtpPass": "", "smtpPassDefinida": !c.smtp_pass.is_empty(),
@@ -147,6 +162,7 @@ impl Configuracoes {
             "aceleracao": c.aceleracao,
             "dicaTermos": c.dica_termos,
             "identificarFalantes": c.identificar_falantes,
+            "verificarAtualizacoes": c.verificar_atualizacoes,
         })
     }
 
@@ -155,6 +171,7 @@ impl Configuracoes {
         let mut c: Config = serde_json::from_value(self.ler_arquivo()).unwrap_or_default();
         let texto = |k: &str| novos[k].as_str().map(str::to_owned);
         if let Some(v) = texto("openaiModel").filter(|v| !v.is_empty()) { c.openai_model = v; }
+        if let Some(v) = texto("chatgptModel").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) { c.chatgpt_model = v; }
         if let Some(v) = texto("transcricaoModel").filter(|v| !v.is_empty()) { c.transcricao_model = v; }
         if let Some(v) = texto("smtpUser") { c.smtp_user = v; }
         if let Some(v) = texto("destinatario") { c.destinatario = v; }
@@ -169,6 +186,7 @@ impl Configuracoes {
         if let Some(v) = novos["analiseLocal"].as_bool() { c.analise_local = v; }
         if let Some(v) = novos["dicaTermos"].as_bool() { c.dica_termos = v; }
         if let Some(v) = novos["identificarFalantes"].as_bool() { c.identificar_falantes = v; }
+        if let Some(v) = novos["verificarAtualizacoes"].as_bool() { c.verificar_atualizacoes = v; }
         let id_valido = |id: &str, tipo: Tipo| crate::locais::CATALOGO.iter().any(|m| m.id == id && m.tipo == tipo);
         if let Some(v) = texto("whisperLocal").filter(|v| id_valido(v, Tipo::Whisper)) { c.whisper_local = v; }
         if let Some(v) = texto("llmLocal").filter(|v| id_valido(v, Tipo::Llm)) { c.llm_local = v; }

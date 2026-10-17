@@ -31,5 +31,12 @@
     "active": true,
     "targets": ["nsis"],
     "icon": ["icons/icon.png", "icons/icon.ico"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZENjEzRjQzRjY0MEM1NDIKUldSQ3hVRDJRejloYlQ3akJXWG9kUnNsd0tTYVJDalM2MU9CTFFxVGk4Q3BWdHBlckRCVGFLWmUK",
+      "endpoints": ["https://github.com/rafaelamiranda/Pauta/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
   }
 }

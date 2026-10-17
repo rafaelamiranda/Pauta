@@ -81,12 +81,14 @@
   .abas { display: flex; gap: 4px; padding: 10px 12px 0; -webkit-app-region: drag; }
   .abas > * { -webkit-app-region: no-drag; }
   .aba { background: none; border: 0; color: var(--suave); font: inherit; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+  .aviso-atualizacao { background: var(--destaque); color: #fff; border: 0; font: inherit; font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; cursor: pointer; margin-left: 8px; }
   .aba[aria-selected="true"] { background: var(--item); color: var(--texto); font-weight: 600; }
   .gravando-ponto { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; display: inline-block; margin-right: 6px; }
   .vista { flex: 1; min-height: 0; display: none; flex-direction: column; }
   .vista.ativa { display: flex; }
   .conteudo { flex: 1; overflow-y: auto; padding: 14px 18px; }
   h2 { font-size: 15px; margin: 14px 0 6px; }
+  h3 { font-size: 13px; margin: 12px 0 4px; }
   h2:first-child { margin-top: 0; }
   ul { padding-left: 18px; } li { margin: 3px 0; }
   a.link-externo { color: var(--destaque); cursor: pointer; }
@@ -211,6 +213,7 @@
       <button class="aba" role="tab" data-vista="traducao" aria-selected="false" id="aba-traducao">Tradução</button>
       <button class="aba" role="tab" data-vista="pendencias" aria-selected="false">Pendências</button>
       <button class="aba" role="tab" data-vista="ajustes" aria-selected="false">Ajustes</button>
+      <button class="aviso-atualizacao" id="aviso-atualizacao" type="button" hidden></button>
       <button class="icone aba-mini" id="minimizar" type="button" title="Minimizar para o mini player" aria-label="Minimizar para o mini player"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M5 19h14"/></svg></button>
       <button class="icone aba-fechar" id="fechar" type="button" title="Fechar o app" aria-label="Fechar o app"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
     </div>
@@ -250,6 +253,12 @@
         <p class="estado" id="modo-resumo"></p>
         <div id="bloco-openai">
         <h2>OpenAI</h2>
+        <h3>Conta do ChatGPT</h3>
+        <p class="nota">Entre com a sua assinatura do ChatGPT (Plus, Pro, Team...) em vez de pagar pela API. Vale para resumo, perguntas e tradução, e tem prioridade sobre a chave. Não vale para transcrever o áudio: para isso use a chave da API ou a transcrição no computador. O login usa o mesmo caminho do Codex CLI da OpenAI, que não é uma API oficial para outros aplicativos: pode mudar ou parar de funcionar, e o uso conta no limite da sua assinatura.</p>
+        <div class="acoes"><span id="chatgpt-estado" class="estado"></span><button class="botao sec" type="button" id="chatgpt-botao"></button></div>
+        <label id="chatgpt-modelo" hidden>Modelo do ChatGPT<select id="chatgptModel"></select></label>
+        <p class="nota" id="chatgptModel-preco" hidden></p>
+        <h3>Chave da API</h3>
         <label>Chave da API<input type="password" id="openaiKey" placeholder=""></label>
         <p class="nota">Não tem uma chave? Crie em <a href="https://platform.openai.com/api-keys" class="link-externo">platform.openai.com/api-keys</a>.</p>
         <label>Modelo de análise (resumo e perguntas)<select id="openaiModel"></select></label>
@@ -281,6 +290,9 @@
         <h2>Modelos no computador</h2>
         <div id="locais-corpo"></div>
         </div>
+        <h2>Atualizações</h2>
+        <label><input type="checkbox" id="verificarAtualizacoes">Procurar versão nova ao abrir o app</label>
+        <div class="acoes"><span id="atualizacao-estado" class="estado"></span><button class="botao sec" type="button" id="atualizacao-botao">Verificar agora</button></div>
         <h2>Privacidade</h2>
         <label>Apagar sozinho reuniões com mais de (dias, 0 = nunca)<input type="text" id="apagarAposDias" inputmode="numeric"></label>
         <div class="acoes">

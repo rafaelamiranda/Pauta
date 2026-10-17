@@ -3,6 +3,7 @@
 mod audio;
 mod segredos;
 
+use busca_core::chatgpt::ChatGpt;
 use busca_core::drive::{ArquivoDrive, Drive};
 use busca_core::exportar;
 use busca_core::falantes::DiarizadorOpenAi;
@@ -20,9 +21,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{Emitter, Manager, State};
+use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 const USUARIO: &str = "local";
+const PAGINA_DE_VERSOES: &str = "https://github.com/rafaelamiranda/Pauta/releases/latest";
 // Tamanhos lógicos da janela: cheia (igual ao tauri.conf.json) e o mini player.
 const LARGURA: f64 = 760.0;
 const ALTURA: f64 = 620.0;
@@ -34,6 +37,9 @@ struct Estado {
     config: Arc<Configuracoes>,
     reuniao: Arc<Reuniao>,
     drive: Arc<Drive>,
+    chatgpt: Arc<ChatGpt>,
+    /// Versão nova achada na última verificação, à espera de o usuário mandar instalar.
+    atualizacao: Mutex<Option<tauri_plugin_updater::Update>>,
     locais: Arc<Locais>,
     captura: Mutex<Option<audio::Captura>>,
     traducao: Arc<Traducao>,
@@ -333,11 +339,75 @@ fn abrir_no_navegador(url: &str) -> anyhow::Result<()> {
 /// Abre no navegador só os endereços de ajuda conhecidos (a tela não escolhe um endereço qualquer).
 #[tauri::command]
 fn abrir_link(url: String) -> Value {
-    const PERMITIDOS: [&str; 2] = ["https://platform.openai.com/api-keys", "https://myaccount.google.com/apppasswords"];
+    const PERMITIDOS: [&str; 3] = ["https://platform.openai.com/api-keys", "https://myaccount.google.com/apppasswords", PAGINA_DE_VERSOES];
     if !PERMITIDOS.contains(&url.as_str()) {
         return resposta(Err("Endereço não permitido.".to_string()));
     }
     resposta(abrir_no_navegador(&url).map(|()| json!({})).map_err(erro))
+}
+
+/// A atualização se instala sozinha no Windows e no AppImage. Em .deb/.rpm ou no executável solto, a pessoa baixa a nova versão.
+fn atualizacao_instalavel() -> bool {
+    cfg!(windows) || (cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some())
+}
+
+/// Procura versão nova no GitHub e guarda a atualização para instalar depois.
+async fn verificar_atualizacao(app: &tauri::AppHandle) -> Result<Value, String> {
+    let atual = app.package_info().version.to_string();
+    let update = app.updater().map_err(erro)?.check().await.map_err(|e| format!("Não foi possível verificar atualizações: {e}"))?;
+    let resultado = match &update {
+        Some(u) => json!({ "disponivel": true, "versaoAtual": atual, "versao": u.version, "notas": u.body, "instalavel": atualizacao_instalavel() }),
+        None => json!({ "disponivel": false, "versaoAtual": atual }),
+    };
+    *app.state::<Estado>().atualizacao.lock().map_err(erro)? = update;
+    Ok(resultado)
+}
+
+#[tauri::command]
+async fn atualizacao_verificar(app: tauri::AppHandle) -> Result<Value, String> {
+    Ok(resposta(verificar_atualizacao(&app).await))
+}
+
+/// Baixa a versão achada na verificação, instala e reabre o app.
+#[tauri::command]
+async fn atualizacao_instalar(app: tauri::AppHandle, estado: State<'_, Estado>) -> Result<Value, String> {
+    if estado.capturando()? {
+        return Ok(json!({ "ok": false, "erro": "Finalize a reunião ou a tradução em andamento antes de atualizar." }));
+    }
+    if !atualizacao_instalavel() {
+        return Ok(json!({ "ok": false, "erro": "Esta instalação não se atualiza sozinha. Baixe a nova versão na página de versões." }));
+    }
+    let Some(update) = estado.atualizacao.lock().map_err(erro)?.take() else {
+        return Ok(json!({ "ok": false, "erro": "Verifique as atualizações primeiro." }));
+    };
+    let (h, mut baixado) = (app.clone(), 0u64);
+    let r = update
+        .download_and_install(
+            move |pedaco, total| {
+                baixado += pedaco as u64;
+                let _ = h.emit("atualizacao:progresso", json!({ "baixado": baixado, "total": total }));
+            },
+            || {},
+        )
+        .await;
+    match r {
+        Ok(()) => {
+            estado.locais.parar_tudo();
+            app.restart()
+        }
+        Err(e) => Ok(json!({ "ok": false, "erro": format!("Não foi possível atualizar: {e}") })),
+    }
+}
+
+/// Entrar com a conta do ChatGPT: abre o login no navegador e guarda a permissão.
+#[tauri::command]
+async fn chatgpt_conectar(estado: State<'_, Estado>) -> Result<Value, String> {
+    Ok(resposta(estado.chatgpt.conectar(abrir_no_navegador).await.map(|()| json!({})).map_err(erro)))
+}
+
+#[tauri::command]
+async fn chatgpt_desconectar(estado: State<'_, Estado>) -> Result<Value, String> {
+    Ok(resposta(estado.chatgpt.desconectar().await.map(|()| json!({})).map_err(erro)))
 }
 
 #[tauri::command]
@@ -391,8 +461,8 @@ async fn reuniao_iniciar(estado: State<'_, Estado>) -> Result<Value, String> {
     if estado.captura_traducao.lock().map_err(erro)?.is_some() {
         return Ok(json!({ "ok": false, "erro": "Pare a tradução em andamento antes de iniciar uma reunião." }));
     }
-    if cfg.openai_key.is_empty() && !(cfg.transcricao_local && cfg.analise_local) {
-        return Ok(json!({ "ok": false, "erro": "Configure a chave da OpenAI na aba Ajustes, ou escolha transcrição e análise locais. A chave é usada para o que não for local." }));
+    if cfg.openai_key.is_empty() && !(cfg.transcricao_local && (cfg.analise_local || cfg.chatgpt_conectado)) {
+        return Ok(json!({ "ok": false, "erro": "Configure a chave da OpenAI na aba Ajustes, ou escolha a transcrição local junto com a análise local ou o login do ChatGPT. A chave é usada para o que não for local." }));
     }
     if cfg.transcricao_local {
         // sobe o servidor de voz antes de começar, para a primeira fala não esperar o modelo carregar
@@ -445,8 +515,8 @@ async fn traducao_iniciar(estado: State<'_, Estado>, origem: String, destino: St
     if estado.capturando()? {
         return Ok(json!({ "ok": false, "erro": "Finalize a reunião em andamento antes de traduzir." }));
     }
-    if cfg.openai_key.is_empty() && !(cfg.transcricao_local && cfg.analise_local) {
-        return Ok(json!({ "ok": false, "erro": "Configure a chave da OpenAI na aba Ajustes, ou escolha transcrição e análise locais. A chave é usada para o que não for local." }));
+    if cfg.openai_key.is_empty() && !(cfg.transcricao_local && (cfg.analise_local || cfg.chatgpt_conectado)) {
+        return Ok(json!({ "ok": false, "erro": "Configure a chave da OpenAI na aba Ajustes, ou escolha a transcrição local junto com a análise local ou o login do ChatGPT. A chave é usada para o que não for local." }));
     }
     // sobe os servidores locais antes, para a primeira fala não esperar o modelo carregar
     if cfg.transcricao_local {
@@ -671,6 +741,7 @@ fn posicionar(j: &tauri::WebviewWindow) {
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let dados = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dados)?;
@@ -707,7 +778,8 @@ fn main() {
             }))
             .com_idioma(Arc::new(move || cfg_idioma.obter().idioma));
             let transcritor = Arc::new(TranscritorRoteador::new(nuvem, locais.clone(), ler_config.clone()));
-            let resumidor = Arc::new(ResumidorRoteador::new(locais.clone(), ler_config.clone()));
+            let chatgpt = Arc::new(ChatGpt::new(config.segredos()));
+            let resumidor = Arc::new(ResumidorRoteador::new(locais.clone(), ler_config.clone(), chatgpt.clone()));
             let traducao = Arc::new(Traducao::new(DependenciasTraducao {
                 transcritor: transcritor.clone(),
                 resumidor: resumidor.clone(),
@@ -744,7 +816,23 @@ fn main() {
             if let Some(docs) = std::fs::read_to_string(&arquivo_documentos).ok().and_then(|t| serde_json::from_str::<Vec<Documento>>(&t).ok()) {
                 let _ = reuniao.definir_documentos(docs);
             }
-            app.manage(Estado { store, config, reuniao, drive, locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos });
+            let verificar_ao_abrir = config.obter().verificar_atualizacoes;
+            app.manage(Estado { store, config, reuniao, drive, chatgpt, atualizacao: Mutex::new(None), locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos });
+
+            if verificar_ao_abrir {
+                // espera o app terminar de abrir; se houver versão nova, a tela mostra um aviso
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+                    match verificar_atualizacao(&h).await {
+                        Ok(v) if v["disponivel"] == true => {
+                            let _ = h.emit("atualizacao:disponivel", v);
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("{e}"),
+                    }
+                });
+            }
 
             let atalho = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
             let atalho_reuniao = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR);
@@ -800,7 +888,7 @@ fn main() {
             buscar, conversa, esconder, modo_mini, mostrar_janela, sair_app, config_ler, config_salvar, dispositivos_listar,
             material_ler, material_salvar, documentos_listar, documento_remover, anexar_arquivo,
             materiais_listar, material_guardar, material_carregar, material_excluir,
-            abrir_link, drive_estado, drive_conectar, drive_desconectar, drive_buscar, drive_anexar,
+            abrir_link, atualizacao_verificar, atualizacao_instalar, chatgpt_conectar, chatgpt_desconectar, drive_estado, drive_conectar, drive_desconectar, drive_buscar, drive_anexar,
             locais_listar, local_baixar, local_cancelar, local_apagar, local_testar,
             perguntar, reuniao_iniciar, reuniao_parar, reuniao_reenviar,
             traducao_idiomas, traducao_iniciar, traducao_parar, traducao_enviar_email, traducao_limpar,

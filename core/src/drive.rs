@@ -42,15 +42,15 @@ pub struct Drive {
     acesso: Mutex<Option<(String, i64)>>,
 }
 
-fn agora_s() -> i64 {
+pub(crate) fn agora_s() -> i64 {
     crate::agora_ms() / 1000
 }
 
-fn aleatorio() -> String {
+pub(crate) fn aleatorio() -> String {
     format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
 }
 
-fn desafio(verificador: &str) -> String {
+pub(crate) fn desafio(verificador: &str) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verificador.as_bytes()))
 }
 
@@ -77,7 +77,7 @@ fn texto_pergunta(t: &str) -> String {
 }
 
 /// Espera a volta do navegador no endereço local e devolve o código de autorização.
-async fn esperar_codigo(listener: tokio::net::TcpListener, estado: &str, limite: Duration) -> Result<String> {
+pub(crate) async fn esperar_codigo(listener: tokio::net::TcpListener, estado: &str, limite: Duration, nome: &str) -> Result<String> {
     let esperar = async {
         loop {
             let (mut sock, _) = listener.accept().await?;
@@ -93,11 +93,11 @@ async fn esperar_codigo(listener: tokio::net::TcpListener, estado: &str, limite:
             };
             if let Some(e) = param("error") {
                 let _ = sock.write_all(resposta("Conexão cancelada.").as_bytes()).await;
-                return Err(anyhow!("O Google recusou a conexão: {e}."));
+                return Err(anyhow!("O {nome} recusou a conexão: {e}."));
             }
             match (param("code"), param("state")) {
                 (Some(codigo), Some(est)) if est == estado => {
-                    let _ = sock.write_all(resposta("Google Drive conectado.").as_bytes()).await;
+                    let _ = sock.write_all(resposta(&format!("{nome} conectado.")).as_bytes()).await;
                     return Ok(codigo);
                 }
                 _ => {
@@ -106,7 +106,7 @@ async fn esperar_codigo(listener: tokio::net::TcpListener, estado: &str, limite:
             }
         }
     };
-    tokio::time::timeout(limite, esperar).await.map_err(|_| anyhow!("Tempo esgotado esperando o login no Google."))?
+    tokio::time::timeout(limite, esperar).await.map_err(|_| anyhow!("Tempo esgotado esperando o login no {nome}."))?
 }
 
 impl Drive {
@@ -185,7 +185,7 @@ impl Drive {
             ],
         )?;
         abrir(url.as_str())?;
-        let codigo = esperar_codigo(listener, &estado, limite).await?;
+        let codigo = esperar_codigo(listener, &estado, limite, "Google Drive").await?;
         let json = self
             .pedir_token(&[
                 ("grant_type", "authorization_code"),

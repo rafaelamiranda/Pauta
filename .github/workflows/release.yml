@@ -1,9 +1,11 @@
 name: Release
 
 # Ao publicar uma tag (ex.: git tag v0.2.0 && git push origin v0.2.0), gera o instalador do Windows (.exe)
-# e o pacote do Linux (.deb) e os anexa a uma Release. Em "Run workflow" (manual) só gera os arquivos,
+# e os pacotes do Linux (.deb e .AppImage) e os anexa a uma Release. Em "Run workflow" (manual) só gera os arquivos,
 # que ficam para baixar na página da execução, sem criar Release.
 # O texto da Release vem da mensagem da tag: git tag -a v0.3.0 -F notas.md && git push origin v0.3.0.
+# Atualização automática: os pacotes são assinados com o segredo TAURI_SIGNING_PRIVATE_KEY (veja o README) e a Release
+# leva o latest.json que o app consulta. A versão da tag precisa ser a mesma de src-tauri/tauri.conf.json.
 on:
   push:
     tags: ['v*']
@@ -21,15 +23,19 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: npm ci
-      - run: npm run build
+      - run: npm run build -- --config src-tauri/tauri.atualizacao.conf.json
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # opcionais: ID e segredo do Google, embutidos no programa (veja o .env.example)
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       - uses: actions/upload-artifact@v7
         with:
           name: pauta-windows
-          path: target/release/bundle/nsis/*-setup.exe
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
           if-no-files-found: error
 
   linux:
@@ -48,14 +54,19 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libsoup-3.0-dev libssl-dev libdbus-1-dev libxdo-dev build-essential pkg-config
       - run: npm ci
-      - run: npm run build -- --bundles deb
+      - run: npm run build -- --bundles deb,appimage --config src-tauri/tauri.atualizacao.conf.json
         env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       - uses: actions/upload-artifact@v7
         with:
           name: pauta-linux
-          path: target/release/bundle/deb/*.deb
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
           if-no-files-found: error
 
   release:
@@ -80,4 +91,19 @@ jobs:
           git fetch --force --tags
           git tag -l "$GITHUB_REF_NAME" --format='%(contents)' > notas.md
           if [ -s notas.md ]; then NOTAS="--notes-file notas.md"; else NOTAS="--generate-notes"; fi
-          gh release create "$GITHUB_REF_NAME" arquivos/* --repo "$GITHUB_REPOSITORY" --title "Pauta $GITHUB_REF_NAME" $NOTAS
+          # Atualização automática: confere a versão e gera o latest.json que o app consulta.
+          VERSAO="${GITHUB_REF_NAME#v}"
+          if [ "$VERSAO" != "$(jq -r .version src-tauri/tauri.conf.json)" ]; then
+            echo "A tag $GITHUB_REF_NAME não bate com a versão de src-tauri/tauri.conf.json (e do package.json/Cargo.toml). Ajuste e publique a tag de novo." >&2
+            exit 1
+          fi
+          EXE=$(find arquivos -name '*-setup.exe' | head -n1)
+          APP=$(find arquivos -name '*.AppImage' | head -n1)
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          jq -n --arg v "$VERSAO" --rawfile n notas.md --arg d "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg wu "$BASE/$(basename "$EXE")" --rawfile ws "$EXE.sig" \
+            --arg lu "$BASE/$(basename "$APP")" --rawfile ls "$APP.sig" \
+            '{version: $v, notes: $n, pub_date: $d, platforms: {
+               "windows-x86_64": {signature: ($ws | rtrimstr("\n")), url: $wu},
+               "linux-x86_64": {signature: ($ls | rtrimstr("\n")), url: $lu}}}' > arquivos/latest.json
+          gh release create "$GITHUB_REF_NAME" $(find arquivos -type f) --repo "$GITHUB_REPOSITORY" --title "Pauta $GITHUB_REF_NAME" $NOTAS

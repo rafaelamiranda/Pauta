@@ -39,6 +39,12 @@
     excluirMaterial: (id) => invoke('material_excluir', { id }),
 
     abrirLink: (url) => invoke('abrir_link', { url }),
+    verificarAtualizacao: () => invoke('atualizacao_verificar'),
+    instalarAtualizacao: () => invoke('atualizacao_instalar'),
+    aoAtualizacaoDisponivel: ouvir('atualizacao:disponivel'),
+    aoProgressoAtualizacao: ouvir('atualizacao:progresso'),
+    conectarChatGpt: () => invoke('chatgpt_conectar'),
+    desconectarChatGpt: () => invoke('chatgpt_desconectar'),
     estadoDrive: () => invoke('drive_estado'),
     conectarDrive: () => invoke('drive_conectar'),
     desconectarDrive: () => invoke('drive_desconectar'),

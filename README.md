@@ -121,9 +121,17 @@ npm run dev
 
 Na aba Ajustes, preencha:
 
-- A chave da API da OpenAI.
+- A chave da API da OpenAI, ou **Entrar com o ChatGPT** para usar a sua assinatura (veja abaixo).
 - O seu Gmail e uma senha de app (myaccount.google.com/apppasswords).
 - O e-mail que recebe a transcrição.
+
+### Entrar com o ChatGPT (assinatura)
+
+Em vez da chave da API, dá para entrar com a conta do ChatGPT (plano pago). O app abre o login no navegador (retorno em `localhost:1455`) e guarda o token no cofre do sistema. Com o login ativo, ele atende o resumo, as perguntas e a tradução, com prioridade sobre a chave; o modelo vem da lista "Modelo do ChatGPT", que aparece depois do login (padrão `gpt-5`; a lista é fixa no app e nem todo modelo existe em todo plano).
+
+- **Não cobre a transcrição do áudio nem a identificação de falantes:** para elas, use a chave da API ou a transcrição local.
+- **Não é uma API oficial para outros aplicativos:** o login usa o mesmo caminho e o mesmo ID de cliente do Codex CLI da OpenAI, e as respostas vêm do endpoint do Codex. A OpenAI pode mudar ou bloquear isso, e o uso conta no limite da sua assinatura. Foi testado só com servidores simulados, não com uma conta real.
+- A porta 1455 precisa estar livre durante o login (feche o Codex CLI, se estiver entrando nele).
 
 ## Rodar no Linux
 
@@ -147,6 +155,17 @@ Depois, `npm install` e `npm run dev`, como no Windows. Instale também o Rust (
 - **Ícone na bandeja:** no GNOME, precisa da extensão AppIndicator.
 - **Instalar de forma fixa (sem sudo):** `scripts/instalar-linux.sh` gera o app e instala em `~/.local/bin/pauta`, com ícone e entrada no menu de aplicativos. `--autostart` abre ao entrar na sessão; `--remover` desinstala. Os atalhos do Wayland (`pkill -USR1 -x pauta`) continuam valendo.
 - **Gerar pacotes:** `npm run build` cria `.deb`, `.rpm` e `.AppImage` em `target/release/bundle/`.
+
+## Atualização automática
+
+Ao abrir, o app procura uma versão nova (em `github.com/rafaelamiranda/Pauta/releases`, arquivo `latest.json`). Se houver, aparece o botão "Atualizar para X" no topo; em Ajustes › Atualizações dá para verificar na hora ou desligar a busca. Nada é instalado sem você clicar, e não atualiza com reunião ou tradução em andamento.
+
+- **Onde se atualiza sozinho:** Windows (instalador) e Linux em **AppImage**. Em `.deb`, `.rpm` ou no executável do `scripts/instalar-linux.sh`, o app só avisa e abre a página de versões para baixar.
+- **Assinatura:** as atualizações são assinadas, e o app só aceita as assinadas com a chave certa. A chave pública está em `src-tauri/tauri.conf.json`. A **chave privada** (`~/.tauri/pauta.key`, fora do repositório) nunca pode ser commitada nem perdida: sem ela não dá para publicar atualizações que as instalações antigas aceitem.
+- **Uma vez só, no GitHub:** `gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/pauta.key` (a chave não tem senha).
+- **Publicar:** aumente a versão em `package.json`, `src-tauri/Cargo.toml` e `src-tauri/tauri.conf.json` (as três iguais), faça o commit e publique a tag `vX.Y.Z`. O workflow assina os pacotes, gera o `latest.json` e falha se a tag não bater com a versão do `tauri.conf.json`.
+- **Build local assinado:** `TAURI_SIGNING_PRIVATE_KEY="$(cat ~/.tauri/pauta.key)" npm run build -- --config src-tauri/tauri.atualizacao.conf.json`. O `npm run build` comum não assina.
+- **Limite:** instalações anteriores à primeira versão com atualização automática precisam ser trocadas à mão uma vez. O fluxo completo (publicar, achar, baixar, instalar e reabrir) só dá para testar com duas versões publicadas de verdade.
 
 ## Gerar o .exe
 

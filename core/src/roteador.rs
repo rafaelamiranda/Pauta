@@ -1,5 +1,6 @@
-//! Escolhe, a cada chamada, entre a OpenAI e o modelo local, conforme os Ajustes.
+//! Escolhe, a cada chamada, entre a OpenAI (chave da API ou login do ChatGPT) e o modelo local, conforme os Ajustes.
 
+use crate::chatgpt::ChatGpt;
 use crate::locais::Locais;
 use crate::servidor::{PORTA_LLM, PORTA_WHISPER};
 use crate::settings::Config;
@@ -52,14 +53,15 @@ impl Transcritor for TranscritorRoteador {
 
 pub struct ResumidorRoteador {
     nuvem: OpenAi,
+    chatgpt: Arc<ChatGpt>,
     local: OpenAi,
     locais: Arc<Locais>,
     config: LerConfig,
 }
 
 impl ResumidorRoteador {
-    pub fn new(locais: Arc<Locais>, config: LerConfig) -> Self {
-        Self { nuvem: OpenAi::new(), local: OpenAi::local(format!("http://127.0.0.1:{PORTA_LLM}/v1")), locais, config }
+    pub fn new(locais: Arc<Locais>, config: LerConfig, chatgpt: Arc<ChatGpt>) -> Self {
+        Self { nuvem: OpenAi::new(), chatgpt, local: OpenAi::local(format!("http://127.0.0.1:{PORTA_LLM}/v1")), locais, config }
     }
 }
 
@@ -68,6 +70,9 @@ impl Resumidor for ResumidorRoteador {
     async fn resumir(&self, transcricao: &str, material: &str, chave: &str, modelo: &str) -> Result<Resumo> {
         let c = (self.config)();
         if !c.analise_local {
+            if c.chatgpt_conectado {
+                return self.chatgpt.resumir(transcricao, material, chave, &c.chatgpt_model).await;
+            }
             return self.nuvem.resumir(transcricao, material, chave, modelo).await;
         }
         self.locais.garantir_llm(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
@@ -77,6 +82,9 @@ impl Resumidor for ResumidorRoteador {
     async fn responder(&self, pergunta: &str, material: &str, transcricao: &str, chave: &str, modelo: &str) -> Result<String> {
         let c = (self.config)();
         if !c.analise_local {
+            if c.chatgpt_conectado {
+                return self.chatgpt.responder(pergunta, material, transcricao, chave, &c.chatgpt_model).await;
+            }
             return self.nuvem.responder(pergunta, material, transcricao, chave, modelo).await;
         }
         self.locais.garantir_llm(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
@@ -86,6 +94,9 @@ impl Resumidor for ResumidorRoteador {
     async fn responder_parcial(&self, pergunta: &str, material: &str, transcricao: &str, chave: &str, modelo: &str, parcial: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String> {
         let c = (self.config)();
         if !c.analise_local {
+            if c.chatgpt_conectado {
+                return self.chatgpt.responder_parcial(pergunta, material, transcricao, chave, &c.chatgpt_model, parcial).await;
+            }
             return self.nuvem.responder_parcial(pergunta, material, transcricao, chave, modelo, parcial).await;
         }
         self.locais.garantir_llm(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
@@ -95,6 +106,9 @@ impl Resumidor for ResumidorRoteador {
     async fn traduzir(&self, texto: &str, origem: &str, destino: &str, chave: &str, modelo: &str) -> Result<String> {
         let c = (self.config)();
         if !c.analise_local {
+            if c.chatgpt_conectado {
+                return self.chatgpt.traduzir(texto, origem, destino, chave, &c.chatgpt_model).await;
+            }
             return self.nuvem.traduzir(texto, origem, destino, chave, modelo).await;
         }
         self.locais.garantir_llm(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
@@ -104,6 +118,9 @@ impl Resumidor for ResumidorRoteador {
     async fn traduzir_parcial(&self, texto: &str, origem: &str, destino: &str, chave: &str, modelo: &str, parcial: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String> {
         let c = (self.config)();
         if !c.analise_local {
+            if c.chatgpt_conectado {
+                return self.chatgpt.traduzir_parcial(texto, origem, destino, chave, &c.chatgpt_model, parcial).await;
+            }
             return self.nuvem.traduzir_parcial(texto, origem, destino, chave, modelo, parcial).await;
         }
         self.locais.garantir_llm(&c).await.map_err(|e| anyhow!("{e} {DICA}"))?;
@@ -117,6 +134,16 @@ mod testes {
     use std::path::PathBuf;
     use std::time::Duration;
 
+    struct SemSegredos;
+    impl crate::settings::Segredos for SemSegredos {
+        fn ler(&self, _: &str) -> Option<String> { None }
+        fn gravar(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+    }
+
+    fn chatgpt() -> Arc<ChatGpt> {
+        Arc::new(ChatGpt::new(Arc::new(SemSegredos)))
+    }
+
     fn locais() -> (Arc<Locais>, PathBuf) {
         let raiz = std::env::temp_dir().join(format!("rot-{}", uuid::Uuid::new_v4()));
         (Locais::com_urls(raiz.clone(), Arc::new(|_, _| {}), "http://127.0.0.1:1", "http://127.0.0.1:1", Duration::ZERO), raiz)
@@ -129,7 +156,7 @@ mod testes {
         let c2 = cfg.clone();
         let config: LerConfig = Arc::new(move || c2.clone());
 
-        let r = ResumidorRoteador::new(l.clone(), config.clone());
+        let r = ResumidorRoteador::new(l.clone(), config.clone(), chatgpt());
         let e = r.resumir("[00:00:00] Eu: oi", "", "", "m").await.unwrap_err().to_string();
         assert!(e.contains("ainda não foi baixado") && e.contains("escolha a OpenAI"), "{e}");
         let e = r.responder("?", "", "", "", "m").await.unwrap_err().to_string();
@@ -146,7 +173,7 @@ mod testes {
     async fn modo_nuvem_nao_toca_nos_servidores_locais() {
         let (l, raiz) = locais();
         let config: LerConfig = Arc::new(Config::default);
-        let r = ResumidorRoteador::new(l, config);
+        let r = ResumidorRoteador::new(l, config, chatgpt());
         // sem chave, quem responde é o cliente da OpenAI
         let e = r.resumir("[00:00:00] Eu: oi", "", "", "m").await.unwrap_err().to_string();
         assert!(e.contains("Chave da OpenAI"), "{e}");
