@@ -13,6 +13,7 @@ use busca_core::material::{extrair_texto, Documento};
 use busca_core::meeting::{Dependencias, Emitir, Reuniao};
 use busca_core::roteador::{ResumidorRoteador, TranscritorRoteador};
 use busca_core::settings::Configuracoes;
+use busca_core::significado::Significado;
 use busca_core::traducao::{DependenciasTraducao, Entrada, Traducao, IDIOMAS};
 use busca_core::store::{Busca, OpcoesBusca, PendenciaGeral, Store};
 use busca_core::transcricao::TranscricaoOpenAi;
@@ -38,6 +39,7 @@ struct Estado {
     reuniao: Arc<Reuniao>,
     drive: Arc<Drive>,
     chatgpt: Arc<ChatGpt>,
+    significado: Arc<Significado>,
     /// Versão nova achada na última verificação, à espera de o usuário mandar instalar.
     atualizacao: Mutex<Option<tauri_plugin_updater::Update>>,
     locais: Arc<Locais>,
@@ -89,9 +91,18 @@ impl Estado {
 
 #[tauri::command]
 async fn buscar(estado: State<'_, Estado>, q: Option<String>, limit: Option<i64>, offset: Option<i64>) -> Result<Busca, String> {
+    // Busca por significado: indexa o que falta e vetoriza o texto digitado. Se falhar (sem internet,
+    // sem chave), a busca de texto segue sozinha.
+    let mut vetor = None;
+    if let Some(texto) = q.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        if !estado.config.chave_significado().is_empty() {
+            let _ = estado.significado.indexar_pendentes(&estado.store, USUARIO).await;
+            vetor = estado.significado.vetor(texto).await.ok();
+        }
+    }
     let store = estado.store.lock().map_err(erro)?;
     store
-        .buscar(USUARIO, OpcoesBusca { texto: q.as_deref(), limit: limit.unwrap_or(20), offset: offset.unwrap_or(0), excluir_ativas: true })
+        .buscar(USUARIO, OpcoesBusca { texto: q.as_deref(), limit: limit.unwrap_or(20), offset: offset.unwrap_or(0), excluir_ativas: true, significado: vetor.as_deref() })
         .map_err(erro)
 }
 
@@ -800,6 +811,8 @@ fn main() {
                 agora: Arc::new(busca_core::agora_ms),
                 diarizador: Some(Arc::new(DiarizadorOpenAi::new(Arc::new(move || cfg_chave.obter().openai_key)))),
             }));
+            let cfg_significado = config.clone();
+            let significado = Arc::new(Significado::new(Arc::new(move || cfg_significado.chave_significado())));
             let drive = Arc::new(Drive::new(
                 config.segredos(),
                 Arc::new(move || {
@@ -817,7 +830,16 @@ fn main() {
                 let _ = reuniao.definir_documentos(docs);
             }
             let verificar_ao_abrir = config.obter().verificar_atualizacoes;
-            app.manage(Estado { store, config, reuniao, drive, chatgpt, atualizacao: Mutex::new(None), locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos });
+            // indexa em segundo plano as conversas que ainda não têm trechos para a busca por significado
+            if !config.chave_significado().is_empty() {
+                let (store, significado) = (store.clone(), significado.clone());
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = significado.indexar_pendentes(&store, USUARIO).await {
+                        eprintln!("Busca por significado: {e}");
+                    }
+                });
+            }
+            app.manage(Estado { store, config, reuniao, drive, chatgpt, significado, atualizacao: Mutex::new(None), locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos });
 
             if verificar_ao_abrir {
                 // espera o app terminar de abrir; se houver versão nova, a tela mostra um aviso

@@ -125,6 +125,7 @@
     $('enviarAutomatico').checked = Boolean(c.enviarAutomatico);
     $('dicaTermos').checked = Boolean(c.dicaTermos);
     $('verificarAtualizacoes').checked = Boolean(c.verificarAtualizacoes);
+    $('buscaSignificado').checked = Boolean(c.buscaSignificado);
     $('identificarFalantes').checked = Boolean(c.identificarFalantes);
     $('apagarAposDias').value = String(c.apagarAposDias ?? 0);
     window.Ajustes.pronto = { resumo: Boolean(c.openaiKeyDefinida || c.chatgptConectado || (c.transcricaoLocal && c.analiseLocal)), analiseLocal: Boolean(c.analiseLocal), email: Boolean(c.smtpUser && c.smtpPassDefinida && c.destinatario), drive: false };
@@ -140,6 +141,7 @@
     dados.enviarAutomatico = $('enviarAutomatico').checked;
     dados.dicaTermos = $('dicaTermos').checked;
     dados.verificarAtualizacoes = $('verificarAtualizacoes').checked;
+    dados.buscaSignificado = $('buscaSignificado').checked;
     dados.identificarFalantes = $('identificarFalantes').checked;
     dados.microfone = $('microfone').value;
     dados.saida = $('saida').value;

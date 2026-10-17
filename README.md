@@ -21,7 +21,7 @@ O projeto nasceu de um estudo de como apps desse tipo fazem busca, transcrição
 | Transcrição | OpenAI `gpt-4o-transcribe`, ou whisper.cpp no próprio computador (opcional). Nomes e siglas do material vão como dica ao transcritor. |
 | Identificação de falantes | Opcional, só com a OpenAI: `gpt-4o-transcribe-diarize` separa as pessoas no som do computador. |
 | Resumo, pendências e perguntas | OpenAI `gpt-4o-mini`, ou llama.cpp no próprio computador (opcional). |
-| Busca | SQLite FTS5. Ignora acento e maiúscula, aceita início de palavra. |
+| Busca | SQLite FTS5. Ignora acento e maiúscula, aceita início de palavra. Mais a busca por significado (embeddings `text-embedding-3-small` da OpenAI), opcional. |
 | Google Drive | API do Drive, somente leitura. Login pelo navegador (OAuth com PKCE). |
 | Documentos | Texto de Google Docs, Planilhas e Apresentações (exportados pelo Google), TXT, MD, CSV, JSON, HTML, DOCX e PDF com texto. |
 | E-mail | SMTP do Gmail com senha de app. |
@@ -37,6 +37,7 @@ Os dois modelos, o idioma, o microfone e a saída de áudio podem ser trocados n
 - **Dica de termos:** o app tira do material de apoio (texto colado e documentos) os nomes próprios, siglas e códigos, os mais repetidos primeiro, e os envia como dica ao transcritor (até 300 caracteres), para errar menos esses nomes. A lista é refeita quando o material muda durante a reunião. Nos Ajustes dá para desligar, caso o modelo comece a repetir a dica no lugar da fala (o app descarta esse tipo de resposta). Funciona na OpenAI e no Whisper local.
 - **Identificação de falantes (opcional):** nos Ajustes, "Separar as pessoas em Outros". No som do computador, cada trecho vai para o modelo `gpt-4o-transcribe-diarize`, e as vozes aparecem como "Pessoa 1", "Pessoa 2" (até 4). Para manter o mesmo nome entre um trecho e outro, o app guarda de 2 a 10 segundos da voz de cada pessoa e envia como referência nos trechos seguintes. Isso põe os trechos do som do computador numa fila, então a transcrição pode atrasar mais. Se a pessoa falou menos de 2 segundos, ou já são 4 vozes, o texto fica como "Outros". O resumo e o e-mail usam esses nomes. Não vale na transcrição local, e o microfone continua sendo "Eu".
 - **Material de apoio:** texto colado, documentos anexados (arquivo do computador ou Google Drive) e materiais salvos por cliente ou projeto, para reutilizar sem colar de novo.
+- **Busca por significado:** além das conversas que têm a palavra digitada, a busca mostra até 10 conversas de sentido parecido (ex.: "faturamento" acha uma reunião que fala de "receita"), marcadas com "Parecido:" e o trecho mais próximo. O app divide cada conversa encerrada em trechos de cerca de 1.200 caracteres, pede um embedding de cada um à OpenAI e guarda no banco local; o cálculo de semelhança é feito no computador. Conversas já existentes são indexadas em segundo plano ao abrir o app, e as novas na próxima busca. **Só vale com a chave da API** (o login do ChatGPT não cobre embeddings) e **com a análise fora do modo local**, porque manda o texto das conversas à OpenAI; dá para desligar em Ajustes › Busca. Sem chave, sem internet ou desligada, a busca é só por palavra. Não foi testada com a API real, só com servidor simulado; o corte de semelhança (0,30) é uma estimativa e pode precisar de ajuste.
 - **Pendências:** aba com as pendências de todas as reuniões, com marcar como feita.
 - **Conversas:** copiar ou salvar em Markdown (pasta Downloads), apagar uma conversa, apagar tudo, apagar sozinho reuniões com mais de N dias, e salvar uma cópia do banco.
 
@@ -185,7 +186,7 @@ Roda os testes do `core` (busca, falas, resumo, e-mail, reunião de ponta a pont
 
 ## Privacidade
 
-- O áudio das falas e o texto das conversas são enviados à OpenAI, a não ser que você ligue a transcrição e a análise locais nos Ajustes. Mesmo assim, o Drive (se usado) e os downloads dos modelos usam a internet.
+- O áudio das falas e o texto das conversas são enviados à OpenAI, a não ser que você ligue a transcrição e a análise locais nos Ajustes. A busca por significado também envia o texto das conversas já salvas (para gerar os embeddings); desligue em Ajustes › Busca se não quiser. Mesmo assim, o Drive (se usado) e os downloads dos modelos usam a internet.
 - O material colado e os documentos anexados (inteiros ou só os trechos escolhidos) também são enviados à OpenAI a cada pergunta.
 - O texto dos documentos fica guardado no seu computador, em `documentos.json` e dentro de `conversas.db`. Para apagar, remova o documento na aba Reunião e apague a conversa.
 - O Drive é lido só enquanto você anexa. O token de acesso fica no Gerenciador de Credenciais do Windows (no Linux, no chaveiro do sistema).
@@ -201,8 +202,7 @@ As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, 
 
 | Ideia | Para que serve | Esforço |
 |---|---|---|
-| Busca por significado | Achar conversas pelo sentido, não só pela palavra, com embeddings. Complementa o FTS. | Alto |
-| Material muito grande, por significado | Hoje o app escolhe trechos por palavras. Embeddings achariam trechos pelo sentido. O limite de pergunta continua em cerca de 400 mil caracteres no total. | Alto |
+| Material muito grande, por significado | Hoje o app escolhe trechos por palavras. Os embeddings da busca por significado poderiam achar trechos pelo sentido. O limite de pergunta continua em cerca de 400 mil caracteres no total. | Alto |
 | Documentos escaneados | PDF só com imagem precisa de OCR, que o app não faz. | Alto |
 | Mais de uma aba de planilha | Google Planilhas exporta só a primeira aba em CSV. | Médio |
 
@@ -241,11 +241,11 @@ As ideias abaixo não estão implementadas. O esforço é uma estimativa minha, 
 
 ### Por onde começar
 
-Já feitos: apagar conversas, exportar e copiar, escolher o microfone com medidor de volume, materiais salvos por cliente ou projeto, lista geral de pendências, anexar documentos (arquivo e Google Drive), transcrição local e análise local com botão de download, dica de termos na transcrição, resposta aparecendo aos poucos e identificação de falantes.
+Já feitos: apagar conversas, exportar e copiar, escolher o microfone com medidor de volume, materiais salvos por cliente ou projeto, lista geral de pendências, anexar documentos (arquivo e Google Drive), transcrição local e análise local com botão de download, dica de termos na transcrição, resposta aparecendo aos poucos e identificação de falantes e busca por significado.
 
 O que falta, nesta ordem:
 
-1. Busca por significado.
+1. Detectar reunião sozinho.
 
 ## Limitações conhecidas
 

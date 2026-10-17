@@ -76,3 +76,14 @@ CREATE TABLE IF NOT EXISTS materiais (
   documentos TEXT NOT NULL DEFAULT '[]',
   atualizado_em INTEGER NOT NULL
 );
+
+-- Busca por significado: trechos da conversa com o vetor (embedding) de cada um, em f32 little-endian.
+CREATE TABLE IF NOT EXISTS trechos (
+  id INTEGER PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  texto TEXT NOT NULL,
+  vetor BLOB NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_trechos_session ON trechos(session_id);

@@ -1,6 +1,7 @@
 //! Conversas e mensagens em SQLite, com busca de texto completo (FTS5).
 
 use crate::material::Documento;
+use crate::significado::{agrupar, cosseno, de_bytes, para_bytes, LIMIAR};
 use anyhow::{anyhow, Result};
 use rusqlite::{params, params_from_iter, types::Value, Connection};
 use serde::{Deserialize, Serialize};
@@ -45,6 +46,8 @@ pub struct ResultadoSessao {
     pub ended_at: Option<i64>,
     /// Trecho da mensagem que casou, com o termo entre colchetes.
     pub snippet: Option<String>,
+    /// Entrou só pelo sentido (o texto digitado não aparece nela); o trecho vem sem destaque.
+    pub por_significado: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -89,11 +92,13 @@ pub struct OpcoesBusca<'a> {
     pub limit: i64,
     pub offset: i64,
     pub excluir_ativas: bool,
+    /// Vetor do texto digitado: acrescenta as conversas de sentido parecido ao resultado.
+    pub significado: Option<&'a [f32]>,
 }
 
 impl Default for OpcoesBusca<'_> {
     fn default() -> Self {
-        Self { texto: None, limit: 20, offset: 0, excluir_ativas: true }
+        Self { texto: None, limit: 20, offset: 0, excluir_ativas: true, significado: None }
     }
 }
 
@@ -107,6 +112,9 @@ pub fn para_consulta_fts(texto: &str) -> Option<String> {
         .collect();
     (!termos.is_empty()).then(|| termos.join(" "))
 }
+
+/// Quantas conversas a busca por significado acrescenta, no máximo.
+const MAX_PARECIDAS: usize = 10;
 
 pub struct Store {
     conn: Connection,
@@ -279,14 +287,21 @@ impl Store {
             },
             None => None,
         };
+        let parecidas = match (&fts, op.significado) {
+            (Some(_), Some(v)) => self.buscar_por_significado(user_id, v)?,
+            _ => vec![],
+        };
         if let Some(q) = &fts {
-            cond.push(
-                "(s.id IN (SELECT id FROM sessions_fts WHERE sessions_fts MATCH ?)
-                  OR s.id IN (SELECT session_id FROM messages_fts WHERE messages_fts MATCH ?))"
-                    .into(),
-            );
+            let mut por_texto = "(s.id IN (SELECT id FROM sessions_fts WHERE sessions_fts MATCH ?)
+                  OR s.id IN (SELECT session_id FROM messages_fts WHERE messages_fts MATCH ?)"
+                .to_string();
             params.push(q.clone().into());
             params.push(q.clone().into());
+            for (id, _) in &parecidas {
+                por_texto.push_str(" OR s.id = ?");
+                params.push(id.clone().into());
+            }
+            cond.push(por_texto + ")");
         }
         let onde = format!("WHERE {}", cond.join(" AND "));
 
@@ -302,7 +317,7 @@ impl Store {
             .query_map(params_from_iter(p_pagina), |r| {
                 Ok(ResultadoSessao {
                     id: r.get(0)?, subject: r.get(1)?, overview: r.get(2)?, status: r.get(3)?,
-                    started_at: r.get(4)?, ended_at: r.get(5)?, snippet: None,
+                    started_at: r.get(4)?, ended_at: r.get(5)?, snippet: None, por_significado: false,
                 })
             })?
             .collect::<std::result::Result<_, _>>()?;
@@ -314,11 +329,74 @@ impl Store {
                 "SELECT snippet(messages_fts, 2, '[', ']', '…', 12) FROM messages_fts
                  WHERE session_id = ? AND messages_fts MATCH ? ORDER BY rank LIMIT 1",
             )?;
+            let mut casou = self.conn.prepare(
+                "SELECT EXISTS(SELECT 1 FROM sessions_fts WHERE id = ?1 AND sessions_fts MATCH ?2)
+                     OR EXISTS(SELECT 1 FROM messages_fts WHERE session_id = ?1 AND messages_fts MATCH ?2)",
+            )?;
             for s in &mut sessions {
                 s.snippet = snip.query_row(params![s.id, q], |r| r.get(0)).ok();
+                if let Some((_, trecho)) = parecidas.iter().find(|(id, _)| *id == s.id) {
+                    if !casou.query_row(params![s.id, q], |r| r.get::<_, bool>(0))? {
+                        s.por_significado = true;
+                        s.snippet = Some(trecho.chars().take(160).collect());
+                    }
+                }
             }
         }
         Ok(Busca { sessions, total })
+    }
+
+    /// Conversas do usuário com trecho de sentido parecido ao vetor: (id, melhor trecho), da mais
+    /// parecida para a menos, só acima do `LIMIAR` e no máximo `MAX_PARECIDAS`.
+    fn buscar_por_significado(&self, user_id: &str, vetor: &[f32]) -> Result<Vec<(String, String)>> {
+        let mut st = self.conn.prepare(
+            "SELECT t.session_id, t.texto, t.vetor FROM trechos t JOIN sessions s ON s.id = t.session_id
+             WHERE s.user_id = ? AND s.status != 'active'",
+        )?;
+        let mut melhores: std::collections::HashMap<String, (f32, String)> = Default::default();
+        let mut linhas = st.query(params![user_id])?;
+        while let Some(r) = linhas.next()? {
+            let nota = cosseno(vetor, &de_bytes(&r.get::<_, Vec<u8>>(2)?));
+            if nota < LIMIAR {
+                continue;
+            }
+            let id: String = r.get(0)?;
+            if melhores.get(&id).is_none_or(|(n, _)| nota > *n) {
+                melhores.insert(id, (nota, r.get(1)?));
+            }
+        }
+        let mut ordem: Vec<_> = melhores.into_iter().collect();
+        ordem.sort_by(|a, b| b.1 .0.total_cmp(&a.1 .0));
+        Ok(ordem.into_iter().take(MAX_PARECIDAS).map(|(id, (_, texto))| (id, texto)).collect())
+    }
+
+    /// Conversas encerradas do usuário que ainda não têm trechos para a busca por significado.
+    pub fn sessoes_sem_trechos(&self, user_id: &str) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare(
+            "SELECT id FROM sessions s WHERE user_id = ? AND status != 'active'
+             AND NOT EXISTS (SELECT 1 FROM trechos t WHERE t.session_id = s.id) ORDER BY started_at DESC",
+        )?;
+        let linhas = st.query_map(params![user_id], |r| r.get(0))?;
+        Ok(linhas.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Textos a indexar de uma conversa: o assunto com o resumo e depois as falas, agrupadas.
+    pub fn trechos_da_sessao(&self, id: &str) -> Result<Vec<String>> {
+        let Some(s) = self.obter_sessao(id)? else { return Ok(vec![]) };
+        let capa = [s.subject, s.overview].into_iter().flatten().filter(|t| !t.trim().is_empty()).collect::<Vec<_>>().join("\n");
+        let falas = self.transcricao(id)?.into_iter().map(|f| f.text).filter(|t| !t.trim().is_empty());
+        Ok(agrupar((!capa.is_empty()).then_some(capa).into_iter().chain(falas)))
+    }
+
+    pub fn guardar_trechos(&self, sessao_id: &str, textos: &[String], vetores: &[Vec<f32>]) -> Result<()> {
+        if textos.len() != vetores.len() {
+            return Err(anyhow!("Trechos e vetores em número diferente."));
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for (t, v) in textos.iter().zip(vetores) {
+            tx.execute("INSERT INTO trechos (session_id, texto, vetor) VALUES (?, ?, ?)", params![sessao_id, t, para_bytes(v)])?;
+        }
+        Ok(tx.commit()?)
     }
 
     /// Apaga todas as conversas encerradas do usuário (as mensagens vão junto). Devolve quantas.
@@ -454,6 +532,39 @@ mod testes {
         assert_eq!(b.total, 1);
         assert_eq!(b.sessions[0].id, "s2");
         assert!(b.sessions[0].snippet.as_deref().unwrap().contains("[contrato]"));
+    }
+
+    #[test]
+    fn significado_acrescenta_conversas_parecidas_sem_vazar_nem_trazer_ruido() {
+        let s = exemplo();
+        let t = |x: &str| vec![x.to_string()];
+        s.guardar_trechos("s1", &t("metas de vendas"), &[vec![1.0, 0.0]]).unwrap();
+        s.guardar_trechos("s2", &t("custos do contrato"), &[vec![0.0, 1.0]]).unwrap();
+        s.guardar_trechos("s4", &t("outro usuário"), &[vec![1.0, 0.0]]).unwrap();
+        s.guardar_trechos("s3", &t("ativa"), &[vec![1.0, 0.0]]).unwrap();
+        assert!(s.guardar_trechos("s1", &t("a"), &[]).is_err());
+        assert_eq!(s.sessoes_sem_trechos("u1").unwrap(), Vec::<String>::new());
+
+        // "faturamento" não aparece em nada; o vetor aponta para s1
+        let b = s.buscar("u1", OpcoesBusca { texto: Some("faturamento"), significado: Some(&[1.0, 0.1]), ..Default::default() }).unwrap();
+        assert_eq!(ids(&b), ["s1"], "só a de sentido parecido; s2 é ortogonal, s3 ativa e s4 é de outro usuário");
+        assert!(b.sessions[0].por_significado);
+        assert_eq!(b.sessions[0].snippet.as_deref(), Some("metas de vendas"));
+
+        // casou pelo texto: não é marcada como "por significado" e mantém o trecho com destaque
+        let b = s.buscar("u1", OpcoesBusca { texto: Some("contrato"), significado: Some(&[0.0, 1.0]), ..Default::default() }).unwrap();
+        assert_eq!(ids(&b), ["s2"]);
+        assert!(!b.sessions[0].por_significado && b.sessions[0].snippet.as_deref().unwrap().contains("[contrato]"));
+
+        // sem vetor, é só a busca de texto
+        assert_eq!(s.buscar("u1", busca("faturamento")).unwrap().total, 0);
+
+        // conversa nova, sem trechos, aparece para indexar; apagada leva os trechos junto
+        s.adicionar_sessao(NovaSessao { id: "s5", user_id: "u1", subject: Some("Nova"), ended_at: Some(9), started_at: 8, ..Default::default() }).unwrap();
+        assert_eq!(s.sessoes_sem_trechos("u1").unwrap(), ["s5"]);
+        s.apagar_sessao("s1").unwrap();
+        let b = s.buscar("u1", OpcoesBusca { texto: Some("faturamento"), significado: Some(&[1.0, 0.1]), ..Default::default() }).unwrap();
+        assert_eq!(b.total, 0);
     }
 
     #[test]

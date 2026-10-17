@@ -51,6 +51,8 @@ pub struct Config {
     pub identificar_falantes: bool,
     /// Procura versão nova no GitHub ao abrir o app.
     pub verificar_atualizacoes: bool,
+    /// Achar conversas pelo sentido (embeddings da OpenAI), além do texto digitado.
+    pub busca_significado: bool,
 }
 
 impl Default for Config {
@@ -79,6 +81,7 @@ impl Default for Config {
             dica_termos: true,
             identificar_falantes: false,
             verificar_atualizacoes: true,
+            busca_significado: true,
         }
     }
 }
@@ -133,6 +136,17 @@ impl Configuracoes {
         c
     }
 
+    /// Chave da OpenAI para a busca por significado, ou vazio quando ela não vale. Manda o texto das
+    /// conversas à OpenAI, então exige a opção ligada, uma chave da API e a análise fora do modo local
+    /// (quem escolheu o modo local não quer texto saindo do computador). Lê só a chave, não todos os segredos.
+    pub fn chave_significado(&self) -> String {
+        let c: Config = serde_json::from_value(self.ler_arquivo()).unwrap_or_default();
+        if !c.busca_significado || c.analise_local {
+            return String::new();
+        }
+        self.segredos.ler(SEGREDO_OPENAI).unwrap_or_default()
+    }
+
     /// Versão para a tela: nunca devolve o segredo, só se ele existe.
     pub fn para_tela(&self) -> Value {
         let c = self.obter();
@@ -163,6 +177,7 @@ impl Configuracoes {
             "dicaTermos": c.dica_termos,
             "identificarFalantes": c.identificar_falantes,
             "verificarAtualizacoes": c.verificar_atualizacoes,
+            "buscaSignificado": c.busca_significado,
         })
     }
 
@@ -187,6 +202,7 @@ impl Configuracoes {
         if let Some(v) = novos["dicaTermos"].as_bool() { c.dica_termos = v; }
         if let Some(v) = novos["identificarFalantes"].as_bool() { c.identificar_falantes = v; }
         if let Some(v) = novos["verificarAtualizacoes"].as_bool() { c.verificar_atualizacoes = v; }
+        if let Some(v) = novos["buscaSignificado"].as_bool() { c.busca_significado = v; }
         let id_valido = |id: &str, tipo: Tipo| crate::locais::CATALOGO.iter().any(|m| m.id == id && m.tipo == tipo);
         if let Some(v) = texto("whisperLocal").filter(|v| id_valido(v, Tipo::Whisper)) { c.whisper_local = v; }
         if let Some(v) = texto("llmLocal").filter(|v| id_valido(v, Tipo::Llm)) { c.llm_local = v; }
@@ -249,6 +265,12 @@ mod testes {
         assert_eq!((s.obter().whisper_local.as_str(), s.obter().aceleracao.as_str()), ("whisper-small", "vulkan"), "tipo errado e valor inválido são ignorados");
         assert_eq!(s.para_tela()["driveClientSecret"], "");
         assert_eq!(s.para_tela()["driveClientSecretDefinida"], true);
+        // busca por significado: ligada por padrão, mas só vale com chave e sem análise local
+        assert!(s.obter().busca_significado && s.chave_significado().is_empty(), "análise local ligada acima");
+        s.salvar(&json!({"analiseLocal": false})).unwrap();
+        assert_eq!(s.chave_significado(), "sk-1");
+        s.salvar(&json!({"buscaSignificado": false})).unwrap();
+        assert!(s.chave_significado().is_empty());
         let _ = std::fs::remove_dir_all(pasta);
     }
 

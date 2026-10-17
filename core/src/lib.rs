@@ -17,6 +17,7 @@ pub mod segmenter;
 #[cfg(target_os = "linux")]
 pub mod segredos_linux;
 pub mod settings;
+pub mod significado;
 pub mod store;
 pub mod summary;
 pub mod traducao;

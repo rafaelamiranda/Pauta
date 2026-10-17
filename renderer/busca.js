@@ -216,7 +216,8 @@
     if (s.overview) item.append(el('div', 'resumo', s.overview));
     if (s.snippet) {
       const t = el('div', 'trecho');
-      t.append(comDestaque(s.snippet));
+      if (s.por_significado) t.append(el('em', null, 'Parecido: '), s.snippet);
+      else t.append(comDestaque(s.snippet));
       item.append(t);
     }
     const abrir = () => abrirDetalhe(s.id);
