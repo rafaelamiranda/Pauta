@@ -209,57 +209,84 @@
 
   // Atualizações: o app avisa ao abrir; a pessoa decide quando instalar (nunca no meio de uma reunião).
   const PAGINA_DE_VERSOES = 'https://github.com/rafaelamiranda/Pauta/releases/latest';
-  const atualizacao = { versao: null, instalavel: false };
+  const atualizacao = { versao: null, versaoAtual: '', instalavel: false };
+  const fundoAtualizacao = $('dialogo-atualizacao');
+  const msgAtualizacao = $('atualizacao-dialogo-msg');
+
+  /** Mostra o estado da atualização em Ajustes e, se estiver aberto, no aviso. */
+  function dizerAtualizacao(texto, erro = false) {
+    for (const e of [$('atualizacao-estado'), msgAtualizacao]) {
+      e.className = erro ? 'erro' : 'estado';
+      e.textContent = texto;
+    }
+  }
+
+  function abrirAviso() {
+    if (!atualizacao.versao) return;
+    msgAtualizacao.className = 'estado';
+    msgAtualizacao.textContent = `A versão ${atualizacao.versao} está disponível (você tem a ${atualizacao.versaoAtual}). Atualizar reinicia o app.`;
+    $('atualizacao-dialogo-instalar').textContent = atualizacao.instalavel ? 'Atualizar agora' : 'Baixar a nova versão';
+    fundoAtualizacao.classList.add('aberto');
+    $('atualizacao-dialogo-instalar').focus();
+  }
+
+  function fecharAviso() {
+    fundoAtualizacao.classList.remove('aberto');
+  }
 
   function mostrarAtualizacao(r) {
     const botao = $('atualizacao-botao');
     const aviso = $('aviso-atualizacao');
     atualizacao.versao = r.disponivel ? r.versao : null;
+    atualizacao.versaoAtual = r.versaoAtual;
     atualizacao.instalavel = Boolean(r.instalavel);
-    $('atualizacao-estado').className = 'estado';
     aviso.hidden = !r.disponivel;
     if (!r.disponivel) {
-      $('atualizacao-estado').textContent = `Você está na versão mais recente (${r.versaoAtual}).`;
+      dizerAtualizacao(`Você está na versão mais recente (${r.versaoAtual}).`);
       botao.textContent = 'Verificar agora';
       return;
     }
-    aviso.textContent = `Atualizar para ${r.versao}`;
-    $('atualizacao-estado').textContent = `Nova versão ${r.versao} disponível (você tem a ${r.versaoAtual}).`;
+    aviso.textContent = `Atualização ${r.versao} disponível`;
+    dizerAtualizacao(`Nova versão ${r.versao} disponível (você tem a ${r.versaoAtual}).`);
     botao.textContent = r.instalavel ? `Atualizar para ${r.versao}` : 'Baixar a nova versão';
   }
 
   $('atualizacao-botao').addEventListener('click', async () => {
-    const botao = $('atualizacao-botao');
-    const estadoAtual = $('atualizacao-estado');
-    botao.disabled = true;
+    const botoes = [$('atualizacao-botao'), $('atualizacao-dialogo-instalar'), $('atualizacao-dialogo-depois')];
+    botoes.forEach((b) => { b.disabled = true; });
     try {
       if (atualizacao.versao && !atualizacao.instalavel) {
         const r = await window.busca.abrirLink(PAGINA_DE_VERSOES);
-        if (!r.ok) estadoAtual.className = 'erro', estadoAtual.textContent = r.erro;
+        if (!r.ok) dizerAtualizacao(r.erro, true);
       } else if (atualizacao.versao) {
-        estadoAtual.className = 'estado';
-        estadoAtual.textContent = 'Baixando a atualização...';
+        dizerAtualizacao('Baixando a atualização...');
         const r = await window.busca.instalarAtualizacao();
-        if (!r.ok) estadoAtual.className = 'erro', estadoAtual.textContent = r.erro;
+        if (!r.ok) dizerAtualizacao(r.erro, true);
       } else {
-        estadoAtual.className = 'estado';
-        estadoAtual.textContent = 'Procurando...';
+        dizerAtualizacao('Procurando...');
         const r = await window.busca.verificarAtualizacao();
         if (r.ok) mostrarAtualizacao(r);
-        else estadoAtual.className = 'erro', estadoAtual.textContent = r.erro;
+        else dizerAtualizacao(r.erro, true);
       }
     } finally {
-      botao.disabled = false;
+      botoes.forEach((b) => { b.disabled = false; });
     }
   });
-  // Vai para Ajustes (onde aparece o progresso) e faz o mesmo que o botão de lá.
-  $('aviso-atualizacao').addEventListener('click', () => {
-    document.querySelector('.aba[data-vista="ajustes"]').click();
-    $('atualizacao-botao').click();
-  });
-  window.busca.aoAtualizacaoDisponivel(mostrarAtualizacao);
+  // O aviso do topo reabre o diálogo; o diálogo faz o mesmo que o botão de Ajustes.
+  $('aviso-atualizacao').addEventListener('click', abrirAviso);
+  $('atualizacao-dialogo-instalar').addEventListener('click', () => $('atualizacao-botao').click());
+  $('atualizacao-dialogo-depois').addEventListener('click', fecharAviso);
+  // Esc fecha só o diálogo; não deixa o atalho global esconder a janela.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && fundoAtualizacao.classList.contains('aberto')) {
+      e.stopPropagation();
+      fecharAviso();
+    }
+  }, true);
+  // Versão nova achada ao abrir o app: pergunta na hora (menos no meio de uma reunião); "Depois" deixa só o aviso no topo.
+  window.busca.aoAtualizacaoDisponivel((r) => { mostrarAtualizacao(r); if (!window.Reuniao?.gravando()) abrirAviso(); });
   window.busca.aoProgressoAtualizacao(({ baixado, total }) => {
-    $('atualizacao-estado').textContent = total ? `Baixando a atualização... ${Math.min(100, Math.round((baixado / total) * 100))}%` : 'Baixando a atualização...';
+    dizerAtualizacao(total ? `Baixando a atualização... ${Math.min(100, Math.round((baixado / total) * 100))}%` : 'Baixando a atualização...');
   });
 
   const dadosEstado = $('dados-estado');
