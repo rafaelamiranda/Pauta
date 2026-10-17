@@ -1,6 +1,6 @@
 {
   "name": "pauta",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Busca de conversas e transcrição de reuniões em uma janela que sobrepõe a tela",
   "private": true,
   "scripts": {
