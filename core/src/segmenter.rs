@@ -3,6 +3,7 @@
 //! Uma instância por fonte de áudio (microfone ou som do computador).
 
 use crate::resample::TAXA;
+use crate::silero::Silero;
 
 pub struct Fala {
     pub pcm: Vec<i16>,
@@ -12,6 +13,7 @@ pub struct Fala {
 pub struct Segmentador {
     limiar_rms: f32, // volume mínimo para contar como fala (0 a 1)
     piso_ruido: f32, // volume do ruído de fundo, estimado nos trechos sem fala
+    silero: Option<Silero>, // detector de voz neural; sem ele, vale o volume
     silencio_ms: f64, // silêncio que encerra uma fala
     fala_minima_ms: f64, // falas mais curtas que isso são descartadas (ruído)
     maxima_ms: f64, // corte forçado para falas muito longas
@@ -47,6 +49,7 @@ impl Segmentador {
         Self {
             limiar_rms: 0.012,
             piso_ruido: 0.0,
+            silero: None,
             silencio_ms: 700.0,
             fala_minima_ms: 250.0,
             maxima_ms: 25000.0,
@@ -60,6 +63,19 @@ impl Segmentador {
             inicio_ms: 0,
             falando: false,
         }
+    }
+
+    /// Segmentador do jeito que os Ajustes pedem: detector de voz por volume ou neural.
+    pub fn da_config(c: &crate::settings::Config) -> Self {
+        let s = Self::new();
+        if c.vad == "silero" { s.com_silero() } else { s }
+    }
+
+    /// Decide o que é voz com o Silero VAD (rede neural) em vez do volume: não confunde ruído constante com
+    /// fala, nem perde voz baixa. Começa a fala acima de 0,5 e só a encerra abaixo de 0,35.
+    pub fn com_silero(mut self) -> Self {
+        self.silero = Some(Silero::new());
+        self
     }
 
     pub fn com_maxima_ms(mut self, v: f64) -> Self {
@@ -87,7 +103,10 @@ impl Segmentador {
         // Em sala barulhenta (ventilador, teclado) o limite sobe junto com o ruído de fundo, para o chiado
         // não virar "fala". O limite fixo continua valendo como mínimo.
         let limiar = self.limiar_rms.max((self.piso_ruido * FATOR_RUIDO).min(LIMITE_MAXIMO));
-        let voz = rms > limiar;
+        let voz = match self.silero.as_mut() {
+            Some(s) => s.processar(pcm) >= if self.falando { 0.35 } else { 0.5 },
+            None => rms > limiar,
+        };
         // O piso desce na hora (o ruído parou), sobe devagar com trechos parecidos com ele e ignora trechos
         // bem mais altos (fala), para uma voz não virar "ruído de fundo".
         if self.piso_ruido == 0.0 || rms < self.piso_ruido {
@@ -179,6 +198,17 @@ mod testes {
         for _ in 0..6 { seg.push(&bloco(FALA), 0); }
         for _ in 0..40 { if seg.push(&ruido(650), 0).is_some() { falas += 1; } }
         assert_eq!(falas, 1, "a voz por cima do chiado é captada");
+    }
+
+    #[test]
+    fn com_silero_silencio_e_tom_puro_nao_viram_fala() {
+        let mut seg = Segmentador::new().com_silero();
+        let tom: Vec<i16> = (0..1600).map(|i| ((i as f32 * 0.07).sin() * 6000.0) as i16).collect();
+        let mut falas = 0;
+        for _ in 0..30 { if seg.push(&bloco(0), 0).is_some() { falas += 1; } }
+        for _ in 0..30 { if seg.push(&tom, 0).is_some() { falas += 1; } }
+        for _ in 0..10 { if seg.push(&bloco(0), 0).is_some() { falas += 1; } }
+        assert_eq!(falas, 0, "um apito não é voz para a rede neural");
     }
 
     #[test]

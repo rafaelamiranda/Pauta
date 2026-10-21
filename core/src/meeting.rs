@@ -175,7 +175,9 @@ fn data_local(ms: i64) -> String {
 pub(crate) async fn transcrever_fala(dep: &Dependencias, id: &str, fonte: Fonte, fala: &Fala, ctx: &ContextoFala, ao_vivo: bool) -> bool {
     let cfg = (dep.config)();
     let dica = if cfg.dica_termos { ctx.dica.clone() } else { String::new() };
-    let pcm = if cfg.preparar_audio { crate::preparo::preparar(&fala.pcm) } else { fala.pcm.clone() };
+    // do áudio original: primeiro o ruído de fundo (rede neural), depois graves e volume
+    let pcm = if cfg.reduzir_ruido { crate::preparo::reduzir_ruido(&fala.pcm) } else { fala.pcm.clone() };
+    let pcm = if cfg.preparar_audio { crate::preparo::preparar(&pcm) } else { pcm };
     let separar = fonte == Fonte::Sistema && cfg.identificar_falantes && !cfg.transcricao_local;
     if let (true, Some(d)) = (separar, dep.diarizador.clone()) {
         let mut registro = ctx.falantes.lock().await;
@@ -326,9 +328,10 @@ impl Reuniao {
             id: &id, user_id: &self.dep.usuario, ativa: true, started_at: inicio / 1000, ..Default::default()
         })?;
         self.dep.store.lock().unwrap().definir_contexto(&id, &self.material())?;
+        let cfg_ini = (self.dep.config)();
         let ctx = ContextoFala::novo(dica_de_termos(&self.material(), TAMANHO_DICA));
         let mut gravadores = [None, None];
-        if let (true, Some(pasta)) = ((self.dep.config)().guardar_audio, self.dep.pasta_audio()) {
+        if let (true, Some(pasta)) = (cfg_ini.guardar_audio, self.dep.pasta_audio()) {
             for f in [Fonte::Mic, Fonte::Sistema] {
                 match crate::audio::Gravador::abrir(&pasta, &id, f) {
                     Ok(gr) => gravadores[indice(f)] = Some(gr),
@@ -337,7 +340,7 @@ impl Reuniao {
             }
         }
         *g = Some(Ativa {
-            id: id.clone(), inicio, mic: Segmentador::new(), sistema: Segmentador::new(),
+            id: id.clone(), inicio, mic: Segmentador::da_config(&cfg_ini), sistema: Segmentador::da_config(&cfg_ini),
             tarefas: vec![], rt: tokio::runtime::Handle::current(), ctx, gravadores,
         });
         (self.dep.emitir)("reuniao:estado", json!({"fase": "gravando", "id": id}));

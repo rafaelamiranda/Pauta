@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 //! Lógica do app de reuniões, sem dependência de interface.
 
 pub mod audio;
@@ -33,6 +34,7 @@ pub mod transcricao;
 pub mod wav;
 pub mod whisper;
 pub mod servidor;
+pub mod silero;
 
 pub use anyhow::{anyhow, Result};
 

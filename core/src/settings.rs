@@ -61,6 +61,10 @@ pub struct Config {
     pub guardar_audio: bool,
     /// Tira o ronco grave e levanta o volume de quem fala baixo antes de transcrever.
     pub preparar_audio: bool,
+    /// Detector de voz: "volume" (padrão) ou "silero" (rede neural).
+    pub vad: String,
+    /// Tira ruído de fundo com o RNNoise (rede neural) antes de transcrever.
+    pub reduzir_ruido: bool,
     /// Quem faz resumo, perguntas e tradução: "openai", "compat" (qualquer serviço no formato da OpenAI:
     /// Groq, Ollama, OpenRouter...) ou "claude".
     pub provedor: String,
@@ -102,6 +106,8 @@ impl Default for Config {
             modelo_resumo: crate::modelos::PADRAO.into(),
             guardar_audio: false,
             preparar_audio: true,
+            vad: "volume".into(),
+            reduzir_ruido: false,
             provedor: "openai".into(),
             compat_url: String::new(),
             compat_model: String::new(),
@@ -217,6 +223,8 @@ impl Configuracoes {
             "modeloResumo": c.modelo_resumo,
             "guardarAudio": c.guardar_audio,
             "prepararAudio": c.preparar_audio,
+            "vad": c.vad,
+            "reduzirRuido": c.reduzir_ruido,
             "provedor": c.provedor,
             "compatUrl": c.compat_url, "compatModel": c.compat_model,
             "compatKey": "", "compatKeyDefinida": !c.compat_key.is_empty(),
@@ -251,6 +259,8 @@ impl Configuracoes {
         if let Some(v) = texto("modeloResumo").map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v.len() <= 60) { c.modelo_resumo = v; }
         if let Some(v) = novos["guardarAudio"].as_bool() { c.guardar_audio = v; }
         if let Some(v) = novos["prepararAudio"].as_bool() { c.preparar_audio = v; }
+        if let Some(v) = texto("vad").filter(|v| v == "volume" || v == "silero") { c.vad = v; }
+        if let Some(v) = novos["reduzirRuido"].as_bool() { c.reduzir_ruido = v; }
         if let Some(v) = texto("provedor").filter(|v| ["openai", "compat", "claude"].contains(&v.as_str())) { c.provedor = v; }
         if let Some(v) = texto("compatUrl").map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| v.is_empty() || v.starts_with("http://") || v.starts_with("https://")) { c.compat_url = v; }
         if let Some(v) = texto("compatModel") { c.compat_model = v.trim().to_string(); }
@@ -359,6 +369,12 @@ mod testes {
         let s = Configuracoes::new(arquivo.clone(), Arc::new(Memoria::default()));
         let c = s.obter();
         assert_eq!((c.provedor.as_str(), c.modelo_resumo.as_str(), c.guardar_audio, c.preparar_audio), ("openai", "padrao", false, true), "áudio guardado começa desligado");
+        assert_eq!((c.vad.as_str(), c.reduzir_ruido), ("volume", false), "as redes neurais de áudio começam desligadas");
+        s.salvar(&json!({"vad": "silero", "reduzirRuido": true})).unwrap();
+        assert_eq!((s.obter().vad.as_str(), s.obter().reduzir_ruido), ("silero", true));
+        s.salvar(&json!({"vad": "inventado"})).unwrap();
+        assert_eq!(s.obter().vad, "silero", "valor inválido é ignorado");
+        s.salvar(&json!({"vad": "volume", "reduzirRuido": false})).unwrap();
         s.salvar(&json!({"provedor": "compat", "compatUrl": " https://api.groq.com/openai/v1/ ", "compatModel": "llama-x", "compatKey": "gsk-1", "claudeKey": "ant-1", "modeloResumo": "daily", "guardarAudio": true})).unwrap();
         let c = s.obter();
         assert_eq!((c.provedor.as_str(), c.compat_url.as_str(), c.compat_model.as_str(), c.compat_key.as_str(), c.claude_key.as_str()), ("compat", "https://api.groq.com/openai/v1", "llama-x", "gsk-1", "ant-1"));

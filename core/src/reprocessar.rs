@@ -89,8 +89,9 @@ impl Reuniao {
         // 1. decodifica e separa as falas (trabalho de CPU, fora do runtime)
         self.progresso("lendo", 0, 0);
         let origem = caminho.to_path_buf();
+        let cfg = (self.dep.config)();
         let (falas, duracao_s) = tokio::task::spawn_blocking(move || -> Result<(Vec<Fala>, f64)> {
-            let mut seg = Segmentador::new();
+            let mut seg = Segmentador::da_config(&cfg);
             let (mut falas, mut pos_ms) = (vec![], 0i64);
             let dur = crate::decodificar::decodificar(&origem, |trecho| {
                 if let Some(f) = seg.push(&trecho, pos_ms) { falas.push(f); }

@@ -12,6 +12,34 @@ const GANHO_MAXIMO: f32 = 8.0;
 /// Pico máximo depois do ganho (evita estourar).
 const PICO_MAXIMO: f32 = 0.95;
 
+/// Tira ruído de fundo constante (ventilador, ar-condicionado, chiado) com o RNNoise, uma rede neural pequena
+/// que trabalha em 48 kHz: o áudio sobe de 16 para 48 kHz, passa pela rede em quadros de 10 ms e desce de volta.
+/// Mantém o tamanho do áudio. Pode comer o fim de palavras fracas; por isso é opcional.
+pub fn reduzir_ruido(pcm: &[i16]) -> Vec<i16> {
+    use nnnoiseless::{DenoiseState, FRAME_SIZE};
+    if pcm.is_empty() {
+        return vec![];
+    }
+    // sobe 3x com interpolação linear
+    let mut alto: Vec<f32> = Vec::with_capacity(pcm.len() * 3 + 2 * FRAME_SIZE);
+    // dois quadros de silêncio antes: a rede leva um instante para "esquentar" e a saída desses quadros é descartada
+    alto.extend(std::iter::repeat(0.0).take(2 * FRAME_SIZE));
+    for (i, &s) in pcm.iter().enumerate() {
+        let (a, b) = (s as f32, *pcm.get(i + 1).unwrap_or(&s) as f32);
+        alto.extend([a, a + (b - a) / 3.0, a + 2.0 * (b - a) / 3.0]);
+    }
+    let util = alto.len();
+    alto.resize(util.div_ceil(FRAME_SIZE) * FRAME_SIZE, 0.0);
+
+    let mut estado = DenoiseState::new();
+    let mut limpo = vec![0.0f32; alto.len()];
+    for (entrada, saida) in alto.chunks_exact(FRAME_SIZE).zip(limpo.chunks_exact_mut(FRAME_SIZE)) {
+        estado.process_frame(saida, entrada);
+    }
+    // desce 3x fazendo a média de cada trio (um filtro simples contra serrilhado)
+    limpo[2 * FRAME_SIZE..util].chunks_exact(3).map(|t| ((t[0] + t[1] + t[2]) / 3.0).clamp(-32768.0, 32767.0) as i16).collect()
+}
+
 pub fn preparar(pcm: &[i16]) -> Vec<i16> {
     if pcm.is_empty() {
         return vec![];
@@ -57,6 +85,22 @@ mod testes {
         // o ronco de 20 Hz perde quase toda a energia (o ganho não sobe sinal que ficou quase nulo)
         assert!(rms(&p[4000..]) < rms(&ronco) * 0.5, "{} {}", rms(&p[4000..]), rms(&ronco));
         assert!(preparar(&[]).is_empty());
+    }
+
+    /// Chiado pseudoaleatório determinístico (gerador congruencial), amplitude aproximada `amp`.
+    fn chiado(n: usize, amp: f32, semente: u32) -> Vec<i16> {
+        let mut x = semente;
+        (0..n).map(|_| { x = x.wrapping_mul(1664525).wrapping_add(1013904223); (((x >> 16) as f32 / 32768.0 - 1.0) * amp * 32767.0) as i16 }).collect()
+    }
+
+    #[test]
+    fn rnnoise_mantem_o_tamanho_e_derruba_o_chiado() {
+        let ruido = chiado(32000, 0.05, 7);
+        let limpo = reduzir_ruido(&ruido);
+        assert_eq!(limpo.len(), ruido.len());
+        assert!(rms(&limpo[8000..]) < rms(&ruido) * 0.25, "{} {}", rms(&limpo[8000..]), rms(&ruido));
+        assert!(reduzir_ruido(&[]).is_empty());
+        assert_eq!(reduzir_ruido(&[100; 7]).len(), 7, "áudio mais curto que um quadro também funciona");
     }
 
     #[test]

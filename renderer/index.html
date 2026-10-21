@@ -330,6 +330,15 @@
         <label>Saída de áudio (som do computador)<select id="saida"></select></label>
         <label>Idioma da reunião (código, como pt, en, es)<input type="text" id="idioma" maxlength="5"></label>
         <label><input type="checkbox" id="prepararAudio">Melhorar o áudio antes de transcrever (tirar ronco grave e levantar voz baixa)</label>
+        <label>Detector de voz (separa fala de silêncio)
+          <select id="vad">
+            <option value="volume">Por volume (padrão, leve)</option>
+            <option value="silero">Silero, rede neural (experimental)</option>
+          </select>
+        </label>
+        <p class="nota">O Silero reconhece voz de verdade, não só volume: tende a errar menos com barulho de fundo e com voz baixa. Roda no computador, sem baixar nada. Ainda não foi testado em reuniões reais.</p>
+        <label><input type="checkbox" id="reduzirRuido">Reduzir ruído de fundo com RNNoise (rede neural, experimental)</label>
+        <p class="nota">Tira ventilador, ar-condicionado e chiado antes de transcrever. Pode comer o fim de palavras fracas; se a transcrição piorar, desligue. Vale para a reunião, a importação e "Transcrever de novo". Não vale na aba Tradução.</p>
         <label><input type="checkbox" id="guardarAudio">Guardar o áudio das falas neste computador</label>
         <p class="nota">Desligado por padrão. Com ele ligado, o áudio das falas fica na pasta de dados do app, até você apagar a conversa. Serve para transcrever de novo (outro modelo ou idioma) e para não perder o que foi dito se o app cair. Avise os participantes de que o áudio está sendo gravado.</p>
         <label><input type="checkbox" id="dicaTermos">Usar nomes e siglas do material como dica na transcrição</label>

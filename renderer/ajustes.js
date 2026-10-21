@@ -164,6 +164,8 @@
     $('identificarFalantes').checked = Boolean(c.identificarFalantes);
     $('guardarAudio').checked = Boolean(c.guardarAudio);
     $('prepararAudio').checked = Boolean(c.prepararAudio);
+    $('reduzirRuido').checked = Boolean(c.reduzirRuido);
+    $('vad').value = c.vad === 'silero' ? 'silero' : 'volume';
     await montarResumo(c);
     carregarHardware();
     $('apagarAposDias').value = String(c.apagarAposDias ?? 0);
@@ -185,6 +187,8 @@
     dados.identificarFalantes = $('identificarFalantes').checked;
     dados.guardarAudio = $('guardarAudio').checked;
     dados.prepararAudio = $('prepararAudio').checked;
+    dados.reduzirRuido = $('reduzirRuido').checked;
+    dados.vad = $('vad').value;
     dados.modeloResumo = $('modeloResumo').value;
     dados.provedor = $('provedor').value;
     dados.microfone = $('microfone').value;
