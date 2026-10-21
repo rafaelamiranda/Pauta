@@ -97,6 +97,17 @@ Medido neste projeto, num PC com 32 GB de memória e placa AMD Radeon RX 6650 XT
 
 Conclusão honesta: o modelo local funciona de ponta a ponta e é rápido, principalmente na placa de vídeo. Mas errou uma pergunta com respostas em duas fontes, e o aviso que o app dá (qualidade menor que a da OpenAI) vale. Para perguntas de preço, prazo e valor numa reunião real, confira a resposta ou use a OpenAI. Não comparei com o `gpt-4o-mini`, então não sei dizer o quanto é pior. A memória usada pelo servidor não foi medida.
 
+## Recursos de áudio, resumo e provedores
+
+- **Resumo de reunião longa:** acima do limite do modelo, o app resume por partes (cada parte tenta 2 vezes) e junta os resumos. Mostra "parte X de Y".
+- **Modelos de resumo:** Reunião comum, daily, retrospectiva, comercial e acompanhamento de projeto mudam o foco do resumo; o formato (título, resumo, decisões, pendências, dúvidas) não muda. Para criar o seu, ponha `modelos-resumo.json` na pasta de dados do app: uma lista de `{"id", "nome", "foco"}`.
+- **Outros provedores de resumo e perguntas:** Claude (Anthropic) e qualquer serviço no formato da OpenAI (Groq, Ollama, OpenRouter...). Testados só com servidores simulados.
+- **Guardar o áudio (desligado por padrão):** permite **Transcrever de novo** uma conversa (a transcrição antiga só é trocada se todos os trechos forem transcritos) e não perder o que foi dito se o app cair. Ao reabrir, reuniões interrompidas são fechadas e resumidas sem enviar e-mail.
+- **Importar um áudio** (mp3, m4a, wav, flac, ogg, mkv): vira uma conversa com transcrição e resumo; todas as vozes entram como "Outros". Limite de 500 MB.
+- **Áudio mais limpo:** antes de transcrever, o app tira o ronco grave e levanta o volume de quem fala baixo (pode ser desligado). O limite de voz do detector passou a acompanhar o ruído de fundo da sala. Isso **não** é o detector neural Silero nem supressão de ruído por rede neural: foi feito em código simples e testado só com sinais sintéticos, não com reuniões reais.
+- **Sugestão de modelos locais:** em Ajustes › Modelos no computador, o app lê a memória, os núcleos e o Vulkan e sugere modelos. É uma regra simples, não um teste. A memória só é lida no Linux; no Windows a sugestão cai no padrão.
+- **Limpeza do raciocínio:** blocos `<think>...</think>` escritos por alguns modelos são removidos das respostas.
+
 ## Estrutura
 
 ```
@@ -193,7 +204,8 @@ Roda os testes do `core` (busca, falas, resumo, e-mail, reunião de ponta a pont
 - O Drive é lido só enquanto você anexa. O token de acesso fica no Gerenciador de Credenciais do Windows (no Linux, no chaveiro do sistema).
 - Avise os participantes de que a reunião está sendo gravada e transcrita.
 - Chaves e senhas não ficam em arquivo. O banco `conversas.db` fica na pasta de dados do app, no seu usuário.
-- O app não guarda o áudio das reuniões. Guarda só o texto transcrito. Para apagar, abra a conversa e use "Apagar esta conversa", ou use os botões de apagar nos Ajustes. O e-mail já enviado não pode ser desfeito.
+- Por padrão o app não guarda o áudio das reuniões, só o texto transcrito. Se você ligar **Guardar o áudio das falas** em Ajustes › Áudio e idioma, o áudio das falas fica na pasta de dados do app (`audio/`), sem criptografia, e serve para transcrever de novo e para recuperar uma reunião interrompida. Ele é apagado junto com a conversa. Para apagar, abra a conversa e use "Apagar esta conversa", ou use os botões de apagar nos Ajustes. O e-mail já enviado não pode ser desfeito.
+- Com **Claude** ou **outro serviço compatível** escolhido em Ajustes › Resumo, o texto das reuniões vai para esse serviço em vez da OpenAI (a transcrição do áudio não muda).
 
 ## Ideias de novas funcionalidades
 

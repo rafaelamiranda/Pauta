@@ -55,6 +55,20 @@ pub struct Config {
     pub busca_significado: bool,
     /// Sugere iniciar a reunião quando Zoom, Teams ou o navegador passam a usar o microfone (Linux).
     pub detectar_reuniao: bool,
+    /// Modelo de resumo escolhido (veja `modelos`).
+    pub modelo_resumo: String,
+    /// Guarda o áudio das falas no computador, para retranscrever depois e recuperar reuniões interrompidas.
+    pub guardar_audio: bool,
+    /// Tira o ronco grave e levanta o volume de quem fala baixo antes de transcrever.
+    pub preparar_audio: bool,
+    /// Quem faz resumo, perguntas e tradução: "openai", "compat" (qualquer serviço no formato da OpenAI:
+    /// Groq, Ollama, OpenRouter...) ou "claude".
+    pub provedor: String,
+    pub compat_url: String,
+    pub compat_model: String,
+    pub compat_key: String,
+    pub claude_model: String,
+    pub claude_key: String,
 }
 
 impl Default for Config {
@@ -85,6 +99,15 @@ impl Default for Config {
             verificar_atualizacoes: true,
             busca_significado: true,
             detectar_reuniao: false,
+            modelo_resumo: crate::modelos::PADRAO.into(),
+            guardar_audio: false,
+            preparar_audio: true,
+            provedor: "openai".into(),
+            compat_url: String::new(),
+            compat_model: String::new(),
+            compat_key: String::new(),
+            claude_model: "claude-sonnet-5-5".into(),
+            claude_key: String::new(),
         }
     }
 }
@@ -92,6 +115,8 @@ impl Default for Config {
 pub(crate) const SEGREDO_CHATGPT: &str = "chatgptAuth";
 const SEGREDO_OPENAI: &str = "openaiKey";
 const SEGREDO_SMTP: &str = "smtpPass";
+const SEGREDO_COMPAT: &str = "compatKey";
+const SEGREDO_CLAUDE: &str = "claudeKey";
 const SEGREDO_DRIVE: &str = "driveClientSecret";
 
 pub struct Configuracoes {
@@ -127,6 +152,8 @@ impl Configuracoes {
         let mut c: Config = serde_json::from_value(self.ler_arquivo()).unwrap_or_default();
         c.openai_key = self.segredos.ler(SEGREDO_OPENAI).unwrap_or_default();
         c.smtp_pass = self.segredos.ler(SEGREDO_SMTP).unwrap_or_default();
+        c.compat_key = self.segredos.ler(SEGREDO_COMPAT).unwrap_or_default();
+        c.claude_key = self.segredos.ler(SEGREDO_CLAUDE).unwrap_or_default();
         c.chatgpt_conectado = self.segredos.ler(SEGREDO_CHATGPT).is_some_and(|t| !t.is_empty());
         c.drive_client_secret = self.segredos.ler(SEGREDO_DRIVE).unwrap_or_default();
         if let Some((id, segredo)) = &self.drive_embutido {
@@ -187,6 +214,14 @@ impl Configuracoes {
             "verificarAtualizacoes": c.verificar_atualizacoes,
             "buscaSignificado": c.busca_significado,
             "detectarReuniao": c.detectar_reuniao,
+            "modeloResumo": c.modelo_resumo,
+            "guardarAudio": c.guardar_audio,
+            "prepararAudio": c.preparar_audio,
+            "provedor": c.provedor,
+            "compatUrl": c.compat_url, "compatModel": c.compat_model,
+            "compatKey": "", "compatKeyDefinida": !c.compat_key.is_empty(),
+            "claudeModel": c.claude_model,
+            "claudeKey": "", "claudeKeyDefinida": !c.claude_key.is_empty(),
         })
     }
 
@@ -213,6 +248,15 @@ impl Configuracoes {
         if let Some(v) = novos["verificarAtualizacoes"].as_bool() { c.verificar_atualizacoes = v; }
         if let Some(v) = novos["buscaSignificado"].as_bool() { c.busca_significado = v; }
         if let Some(v) = novos["detectarReuniao"].as_bool() { c.detectar_reuniao = v; }
+        if let Some(v) = texto("modeloResumo").map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v.len() <= 60) { c.modelo_resumo = v; }
+        if let Some(v) = novos["guardarAudio"].as_bool() { c.guardar_audio = v; }
+        if let Some(v) = novos["prepararAudio"].as_bool() { c.preparar_audio = v; }
+        if let Some(v) = texto("provedor").filter(|v| ["openai", "compat", "claude"].contains(&v.as_str())) { c.provedor = v; }
+        if let Some(v) = texto("compatUrl").map(|v| v.trim().trim_end_matches('/').to_string()).filter(|v| v.is_empty() || v.starts_with("http://") || v.starts_with("https://")) { c.compat_url = v; }
+        if let Some(v) = texto("compatModel") { c.compat_model = v.trim().to_string(); }
+        if let Some(v) = texto("claudeModel").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) { c.claude_model = v; }
+        if let Some(v) = texto(SEGREDO_COMPAT).filter(|v| !v.is_empty()) { self.segredos.gravar(SEGREDO_COMPAT, v.trim())?; }
+        if let Some(v) = texto(SEGREDO_CLAUDE).filter(|v| !v.is_empty()) { self.segredos.gravar(SEGREDO_CLAUDE, v.trim())?; }
         let id_valido = |id: &str, tipo: Tipo| crate::locais::CATALOGO.iter().any(|m| m.id == id && m.tipo == tipo);
         if let Some(v) = texto("whisperLocal").filter(|v| id_valido(v, Tipo::Whisper)) { c.whisper_local = v; }
         if let Some(v) = texto("llmLocal").filter(|v| id_valido(v, Tipo::Llm)) { c.llm_local = v; }
@@ -224,6 +268,8 @@ impl Configuracoes {
         c.openai_key.clear();
         c.smtp_pass.clear();
         c.drive_client_secret.clear();
+        c.compat_key.clear();
+        c.claude_key.clear();
         if let Some(pai) = self.arquivo.parent() { std::fs::create_dir_all(pai)?; }
         std::fs::write(&self.arquivo, serde_json::to_string_pretty(&c)?)?;
         Ok(())
@@ -303,6 +349,28 @@ mod testes {
         // vazio não ativa o modo embutido
         let sem = Configuracoes::new(arquivo, Arc::new(Memoria::default())).com_drive_embutido("", "x");
         assert_eq!(sem.para_tela()["driveEmbutido"], false);
+        let _ = std::fs::remove_dir_all(pasta);
+    }
+
+    #[test]
+    fn provedores_modelo_de_resumo_e_audio() {
+        let pasta = std::env::temp_dir().join(format!("cfg-{}", uuid::Uuid::new_v4()));
+        let arquivo = pasta.join("config.json");
+        let s = Configuracoes::new(arquivo.clone(), Arc::new(Memoria::default()));
+        let c = s.obter();
+        assert_eq!((c.provedor.as_str(), c.modelo_resumo.as_str(), c.guardar_audio, c.preparar_audio), ("openai", "padrao", false, true), "áudio guardado começa desligado");
+        s.salvar(&json!({"provedor": "compat", "compatUrl": " https://api.groq.com/openai/v1/ ", "compatModel": "llama-x", "compatKey": "gsk-1", "claudeKey": "ant-1", "modeloResumo": "daily", "guardarAudio": true})).unwrap();
+        let c = s.obter();
+        assert_eq!((c.provedor.as_str(), c.compat_url.as_str(), c.compat_model.as_str(), c.compat_key.as_str(), c.claude_key.as_str()), ("compat", "https://api.groq.com/openai/v1", "llama-x", "gsk-1", "ant-1"));
+        assert!(c.guardar_audio && c.modelo_resumo == "daily");
+        let em_disco = std::fs::read_to_string(&arquivo).unwrap();
+        assert!(!em_disco.contains("gsk-1") && !em_disco.contains("ant-1"), "chaves ficam fora do arquivo");
+        let tela = s.para_tela();
+        assert_eq!((tela["compatKey"].as_str(), tela["compatKeyDefinida"].as_bool(), tela["claudeKeyDefinida"].as_bool()), (Some(""), Some(true), Some(true)));
+        // valores inválidos são ignorados; chave vazia mantém a anterior
+        s.salvar(&json!({"provedor": "outro", "compatUrl": "ftp://x", "compatKey": "", "claudeModel": "  "})).unwrap();
+        let c = s.obter();
+        assert_eq!((c.provedor.as_str(), c.compat_url.as_str(), c.compat_key.as_str(), c.claude_model.as_str()), ("compat", "https://api.groq.com/openai/v1", "gsk-1", "claude-sonnet-5-5"));
         let _ = std::fs::remove_dir_all(pasta);
     }
 }

@@ -5,8 +5,8 @@
   const { confirmarDuplo } = window.UI;
   const form = document.getElementById('form-ajustes');
   const estado = document.getElementById('ajustes-estado');
-  const campos = ['openaiKey', 'chatgptModel', 'openaiModel', 'transcricaoModel', 'smtpUser', 'smtpPass', 'destinatario', 'idioma', 'driveClientId', 'driveClientSecret'];
-  const segredos = ['openaiKey', 'smtpPass', 'driveClientSecret'];
+  const campos = ['openaiKey', 'chatgptModel', 'openaiModel', 'transcricaoModel', 'smtpUser', 'smtpPass', 'destinatario', 'idioma', 'driveClientId', 'driveClientSecret', 'claudeKey', 'claudeModel', 'compatUrl', 'compatModel', 'compatKey'];
+  const segredos = ['openaiKey', 'smtpPass', 'driveClientSecret', 'claudeKey', 'compatKey'];
   const $ = (id) => document.getElementById(id);
 
   // Preços de referência em US$ (fontes de terceiros, sem conferência na página oficial). Análise: por 1 milhão de tokens. Transcrição: por minuto.
@@ -109,6 +109,40 @@
     });
   }
 
+  async function montarResumo(c) {
+    const modelos = await window.busca.modelosResumo();
+    const sel = $('modeloResumo');
+    sel.replaceChildren(...modelos.map((m) => new Option(m.nome, m.id)));
+    if (c.modeloResumo && !modelos.some((m) => m.id === c.modeloResumo)) sel.append(new Option(`${c.modeloResumo} (não encontrado)`, c.modeloResumo));
+    sel.value = c.modeloResumo || 'padrao';
+    $('provedor').value = c.provedor || 'openai';
+    mostrarProvedor();
+  }
+
+  function mostrarProvedor() {
+    const p = $('provedor').value;
+    $('bloco-claude').hidden = p !== 'claude';
+    $('bloco-compat').hidden = p !== 'compat';
+  }
+  $('provedor').addEventListener('change', mostrarProvedor);
+  $('compatPreset').addEventListener('change', () => { if ($('compatPreset').value) $('compatUrl').value = $('compatPreset').value; });
+
+  let sugestao = null;
+  async function carregarHardware() {
+    const { maquina, sugestao: s } = await window.busca.sugestaoHardware();
+    sugestao = s;
+    const gb = maquina.memoria_mb ? `${(maquina.memoria_mb / 1024).toFixed(0)} GB de memória, ` : '';
+    $('hardware-dica').textContent = `Este computador: ${gb}${maquina.nucleos} núcleos${maquina.vulkan ? ', driver Vulkan encontrado' : ''}. ${s.motivo} Sugestão: ${s.whisper} (transcrição), ${s.llm} (análise), ${s.aceleracao === 'vulkan' ? 'placa de vídeo' : 'processador'}. É uma estimativa, não um teste.`;
+    $('hardware-usar').hidden = false;
+  }
+  $('hardware-usar').addEventListener('click', async () => {
+    if (!sugestao) return;
+    const r = await window.busca.salvarConfig({ whisperLocal: sugestao.whisper, llmLocal: sugestao.llm, aceleracao: sugestao.aceleracao });
+    estado.className = r.ok ? 'estado' : 'erro';
+    estado.textContent = r.ok ? 'Sugestão aplicada. Baixe os modelos escolhidos abaixo, se ainda não os tem.' : `Erro: ${r.erro}`;
+    if (r.ok) await carregar();
+  });
+
   async function carregar() {
     const c = await window.busca.lerConfig();
     window.Ajustes.driveEmbutido = Boolean(c.driveEmbutido);
@@ -128,6 +162,10 @@
     $('buscaSignificado').checked = Boolean(c.buscaSignificado);
     $('detectarReuniao').checked = Boolean(c.detectarReuniao);
     $('identificarFalantes').checked = Boolean(c.identificarFalantes);
+    $('guardarAudio').checked = Boolean(c.guardarAudio);
+    $('prepararAudio').checked = Boolean(c.prepararAudio);
+    await montarResumo(c);
+    carregarHardware();
     $('apagarAposDias').value = String(c.apagarAposDias ?? 0);
     window.Ajustes.pronto = { resumo: Boolean(c.openaiKeyDefinida || c.chatgptConectado || (c.transcricaoLocal && c.analiseLocal)), analiseLocal: Boolean(c.analiseLocal), email: Boolean(c.smtpUser && c.smtpPassDefinida && c.destinatario), drive: false };
     const modo = (await window.ModelosLocais?.carregar(c)) ?? 'openai';
@@ -145,6 +183,10 @@
     dados.buscaSignificado = $('buscaSignificado').checked;
     dados.detectarReuniao = $('detectarReuniao').checked;
     dados.identificarFalantes = $('identificarFalantes').checked;
+    dados.guardarAudio = $('guardarAudio').checked;
+    dados.prepararAudio = $('prepararAudio').checked;
+    dados.modeloResumo = $('modeloResumo').value;
+    dados.provedor = $('provedor').value;
     dados.microfone = $('microfone').value;
     dados.saida = $('saida').value;
     Object.assign(dados, window.ModelosLocais?.valores());

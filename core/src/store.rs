@@ -230,6 +230,32 @@ impl Store {
         }
     }
 
+    /// Conversas ainda marcadas como em andamento (sobraram de uma queda do app, se nenhuma reunião está rodando).
+    pub fn sessoes_ativas(&self, user_id: &str) -> Result<Vec<Sessao>> {
+        let mut st = self.conn.prepare("SELECT id FROM sessions WHERE user_id = ? AND status = 'active' ORDER BY started_at")?;
+        let ids: Vec<String> = st.query_map(params![user_id], |r| r.get(0))?.collect::<std::result::Result<_, _>>()?;
+        ids.iter().filter_map(|id| self.obter_sessao(id).transpose()).collect()
+    }
+
+    pub fn existe_sessao(&self, id: &str) -> bool {
+        self.conn.query_row("SELECT 1 FROM sessions WHERE id = ?", params![id], |_| Ok(())).is_ok()
+    }
+
+    /// Troca todas as falas da conversa por `novas` (e apaga os trechos da busca por significado, que
+    /// ficaram velhos). Tudo numa transação: se algo falhar, a conversa fica como estava.
+    pub fn substituir_falas(&self, sessao_id: &str, novas: &[FalaGravada]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM messages WHERE session_id = ?", params![sessao_id])?;
+        tx.execute("DELETE FROM trechos WHERE session_id = ?", params![sessao_id])?;
+        for f in novas {
+            tx.execute(
+                "INSERT INTO messages (id, session_id, role, content, speaker, timestamp) VALUES (?, ?, 'user', ?, ?, ?)",
+                params![uuid::Uuid::new_v4().to_string(), sessao_id, f.text, f.speaker, f.timestamp],
+            )?;
+        }
+        Ok(tx.commit()?)
+    }
+
     /// Apaga uma conversa (e as mensagens dela). Usado quando a reunião nem chega a começar.
     pub fn apagar_sessao(&self, id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM sessions WHERE id = ?", params![id])?;

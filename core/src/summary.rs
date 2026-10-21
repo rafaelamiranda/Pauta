@@ -50,7 +50,8 @@ pub struct Resumo {
 #[async_trait]
 pub trait Resumidor: Send + Sync {
     /// `material` é o texto de apoio colado pela pessoa (pode ser vazio).
-    async fn resumir(&self, transcricao: &str, material: &str, chave: &str, modelo: &str) -> Result<Resumo>;
+    /// `foco` é o que o modelo de resumo escolhido manda priorizar (vazio = resumo comum).
+    async fn resumir(&self, transcricao: &str, material: &str, foco: &str, chave: &str, modelo: &str) -> Result<Resumo>;
     /// Responde uma pergunta usando só o material e a transcrição.
     async fn responder(&self, pergunta: &str, material: &str, transcricao: &str, chave: &str, modelo: &str) -> Result<String>;
     /// Como `responder`, mas chama `parcial` com o texto já escrito enquanto a resposta chega.
@@ -131,6 +132,20 @@ pub fn formatar_transcricao(falas: &[FalaGravada]) -> String {
 /// Limites de texto do modelo local (contexto de 32 mil tokens, com folga para a resposta).
 pub const LIMITE_RESUMO_LOCAL: usize = 60_000;
 pub const LIMITE_PERGUNTA_LOCAL: usize = 70_000;
+/// Serviços compatíveis (Groq, Ollama, OpenRouter): o contexto do modelo é desconhecido, então o limite é prudente.
+pub const LIMITE_RESUMO_COMPATIVEL: usize = 100_000;
+pub const LIMITE_PERGUNTA_COMPATIVEL: usize = 120_000;
+
+/// Quanto da transcrição cabe num resumo, conforme quem vai resumir.
+pub fn limite_resumo(c: &crate::settings::Config) -> usize {
+    if c.analise_local {
+        LIMITE_RESUMO_LOCAL
+    } else if c.provedor == "compat" {
+        LIMITE_RESUMO_COMPATIVEL
+    } else {
+        LIMITE_CARACTERES
+    }
+}
 
 pub struct OpenAi {
     url_base: String,
@@ -139,6 +154,11 @@ pub struct OpenAi {
     limite_pergunta: usize,
     /// A OpenAI exige chave; o servidor local não.
     exige_chave: bool,
+    /// Como o serviço é chamado nas mensagens de erro.
+    rotulo: &'static str,
+    /// Só a OpenAI garante o formato do resumo (`json_schema`); os outros serviços recebem `json_object`
+    /// e o formato descrito nas instruções.
+    esquema_estrito: bool,
 }
 
 impl OpenAi {
@@ -147,12 +167,18 @@ impl OpenAi {
     }
 
     pub fn com_url(url: impl Into<String>) -> Self {
-        Self { url_base: url.into(), http: reqwest::Client::new(), limite_resumo: LIMITE_CARACTERES, limite_pergunta: LIMITE_PERGUNTA, exige_chave: true }
+        Self { url_base: url.into(), http: reqwest::Client::new(), limite_resumo: LIMITE_CARACTERES, limite_pergunta: LIMITE_PERGUNTA, exige_chave: true, rotulo: "OpenAI", esquema_estrito: true }
     }
 
     /// Cliente para um servidor local compatível com a API da OpenAI (llama-server): sem chave e com limites menores.
     pub fn local(url: impl Into<String>) -> Self {
-        Self { exige_chave: false, limite_resumo: LIMITE_RESUMO_LOCAL, limite_pergunta: LIMITE_PERGUNTA_LOCAL, ..Self::com_url(url) }
+        Self { exige_chave: false, rotulo: "O modelo local", esquema_estrito: false, limite_resumo: LIMITE_RESUMO_LOCAL, limite_pergunta: LIMITE_PERGUNTA_LOCAL, ..Self::com_url(url) }
+    }
+
+    /// Cliente para outro serviço no formato da OpenAI (Groq, Ollama, OpenRouter...). A chave é opcional
+    /// (o Ollama não pede), e os limites são menores porque o contexto do modelo é desconhecido.
+    pub fn compativel(url: impl Into<String>) -> Self {
+        Self { exige_chave: false, rotulo: "O provedor", esquema_estrito: false, limite_resumo: LIMITE_RESUMO_COMPATIVEL, limite_pergunta: LIMITE_PERGUNTA_COMPATIVEL, ..Self::com_url(url) }
     }
 
     fn pedido(&self, corpo: &serde_json::Value, chave: &str) -> reqwest::RequestBuilder {
@@ -161,7 +187,7 @@ impl OpenAi {
     }
 
     fn nome(&self) -> &'static str {
-        if self.exige_chave { "OpenAI" } else { "O modelo local" }
+        self.rotulo
     }
 
     /// Valida e monta o pedido de uma pergunta (usado pela resposta inteira e pela resposta em fluxo).
@@ -199,11 +225,11 @@ impl OpenAi {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(dados.trim()) else { continue };
                 if let Some(c) = v["choices"][0]["delta"]["content"].as_str() {
                     acumulado.push_str(c);
-                    parcial(acumulado.trim_start());
+                    parcial(limpar_raciocinio(&acumulado).trim_start());
                 }
             }
         }
-        match acumulado.trim() {
+        match limpar_raciocinio(&acumulado).trim() {
             "" => Err(anyhow!("{} não devolveu resposta.", self.nome())),
             t => Ok(t.to_string()),
         }
@@ -218,7 +244,7 @@ impl Default for OpenAi {
 
 #[async_trait]
 impl Resumidor for OpenAi {
-    async fn resumir(&self, transcricao: &str, material: &str, chave: &str, modelo: &str) -> Result<Resumo> {
+    async fn resumir(&self, transcricao: &str, material: &str, foco: &str, chave: &str, modelo: &str) -> Result<Resumo> {
         if chave.is_empty() && self.exige_chave {
             return Err(anyhow!("Chave da OpenAI não configurada."));
         }
@@ -231,13 +257,18 @@ impl Resumidor for OpenAi {
                 if self.exige_chave { "" } else { " com o modelo local. Use a OpenAI para esta reunião" }
             ));
         }
+        let (formato, instrucoes) = if self.esquema_estrito {
+            (json!({"type": "json_schema", "json_schema": esquema()}), INSTRUCOES.to_string())
+        } else {
+            (json!({"type": "json_object"}), format!("{INSTRUCOES}\n\n{FORMATO_JSON}"))
+        };
         let corpo = json!({
             "model": modelo,
             "temperature": 0.2,
-            "response_format": {"type": "json_schema", "json_schema": esquema()},
+            "response_format": formato,
             "messages": [
-                {"role": "system", "content": INSTRUCOES},
-                {"role": "user", "content": conteudo_resumo(transcricao, material)}
+                {"role": "system", "content": instrucoes},
+                {"role": "user", "content": conteudo_resumo(transcricao, material, foco)}
             ]
         });
         let res = self.pedido(&corpo, chave).send().await?;
@@ -249,7 +280,7 @@ impl Resumidor for OpenAi {
         }
         let msg = &json["choices"][0]["message"];
         match msg["content"].as_str() {
-            Some(c) if msg["refusal"].is_null() => Ok(serde_json::from_str(c)?),
+            Some(c) if msg["refusal"].is_null() => Ok(serde_json::from_str(extrair_json(&limpar_raciocinio(c)))?),
             _ => Err(anyhow!("{} não devolveu resumo{}.", self.nome(), msg["refusal"].as_str().map(|r| format!(": {r}")).unwrap_or_default())),
         }
     }
@@ -270,8 +301,8 @@ impl Resumidor for OpenAi {
             return Err(anyhow!("{} respondeu {}: {msg}", self.nome(), status.as_u16()));
         }
         let msg = &json["choices"][0]["message"];
-        match msg["content"].as_str().map(str::trim).filter(|c| !c.is_empty()) {
-            Some(c) => Ok(c.to_string()),
+        match msg["content"].as_str().map(limpar_raciocinio).map(|c| c.trim().to_string()).filter(|c| !c.is_empty()) {
+            Some(c) => Ok(c),
             None => Err(anyhow!("{} não devolveu resposta.", self.nome())),
         }
     }
@@ -311,11 +342,116 @@ impl Resumidor for OpenAi {
             let msg = json["error"]["message"].as_str().unwrap_or("erro desconhecido");
             return Err(anyhow!("{} respondeu {}: {msg}", self.nome(), status.as_u16()));
         }
-        match json["choices"][0]["message"]["content"].as_str().map(str::trim).filter(|c| !c.is_empty()) {
-            Some(c) => Ok(c.to_string()),
+        match json["choices"][0]["message"]["content"].as_str().map(limpar_raciocinio).map(|c| c.trim().to_string()).filter(|c| !c.is_empty()) {
+            Some(c) => Ok(c),
             None => Err(anyhow!("{} não devolveu a tradução.", self.nome())),
         }
     }
+}
+
+pub(crate) const FORMATO_JSON: &str = "Responda somente com um objeto JSON, sem texto antes ou depois, com estes campos: \"titulo\" (texto), \"resumo\" (texto), \"decisoes\" (lista de textos), \"pendencias\" (lista de objetos com \"tarefa\", \"responsavel\" e \"prazo\"; os dois últimos podem ser null) e \"duvidas\" (lista de textos).";
+
+/// Do primeiro `{` ao último `}`: alguns serviços cercam o JSON com ``` ou com uma frase.
+fn extrair_json(texto: &str) -> &str {
+    match (texto.find('{'), texto.rfind('}')) {
+        (Some(i), Some(f)) if f > i => &texto[i..=f],
+        _ => texto.trim(),
+    }
+}
+
+/// Tira o "raciocínio" que alguns modelos escrevem entre `<think>` e `</think>` (ou `<thinking>`).
+/// Um bloco que abre e não fecha esconde o resto do texto: ainda está sendo escrito (ou foi cortado).
+pub fn limpar_raciocinio(texto: &str) -> String {
+    let mut saida = String::with_capacity(texto.len());
+    let mut resto = texto;
+    while let Some(i) = resto.find("<think") {
+        saida.push_str(&resto[..i]);
+        let depois = &resto[i..];
+        if "ing>".starts_with(&depois[6..]) && !depois[6..].is_empty() || depois.len() == 6 {
+            return saida; // a marca ainda está chegando
+        }
+        let fim_da_marca = depois.find('>');
+        let nome_ok = depois[6..].starts_with("ing>") || depois[6..].starts_with('>') || depois[6..].starts_with("ing ") || depois[6..].starts_with(' ');
+        match (nome_ok, fim_da_marca) {
+            (true, Some(f)) => {
+                let corpo = &depois[f + 1..];
+                let fechou = ["</think>", "</thinking>"].iter().filter_map(|t| corpo.find(t).map(|p| p + t.len())).min();
+                match fechou {
+                    Some(p) => resto = &corpo[p..],
+                    None => return saida,
+                }
+            }
+            // "<think" sem o ">" ainda (texto chegando aos poucos) ou outra marca: esconde só se for o início de uma marca
+            (true, None) => return saida,
+            _ => {
+                saida.push_str("<think");
+                resto = &depois[6..];
+            }
+        }
+    }
+    saida.push_str(resto);
+    saida
+}
+
+/// Resume uma reunião de qualquer tamanho: se a transcrição passa de `limite`, resume cada parte
+/// (cada uma tenta até 2 vezes) e depois junta os resumos parciais num só.
+/// `avancar(feitas, total)` é chamado a cada parte pronta (e uma vez para a junção).
+pub async fn resumir_em_partes(
+    r: &dyn Resumidor, transcricao: &str, material: &str, foco: &str, chave: &str, modelo: &str, limite: usize,
+    avancar: &(dyn Fn(usize, usize) + Send + Sync),
+) -> Result<Resumo> {
+    if transcricao.len() <= limite {
+        return r.resumir(transcricao, material, foco, chave, modelo).await;
+    }
+    // folga: o material e as instruções também ocupam o contexto
+    let partes = dividir_por_linhas(transcricao, (limite / 2).max(1_000));
+    let total = partes.len() + 1;
+    let mut parciais = Vec::with_capacity(partes.len());
+    for (i, parte) in partes.iter().enumerate() {
+        let mut resultado = r.resumir(parte, material, foco, chave, modelo).await;
+        if resultado.is_err() {
+            resultado = r.resumir(parte, material, foco, chave, modelo).await;
+        }
+        let resumo = resultado.map_err(|e| anyhow!("Falha ao resumir a parte {} de {}: {e}", i + 1, partes.len()))?;
+        parciais.push(resumo);
+        avancar(i + 1, total);
+    }
+    let juntos = formatar_parciais(&parciais);
+    let r = r.resumir(&juntos, material, foco, chave, modelo).await.map_err(|e| anyhow!("Falha ao juntar os resumos das partes: {e}"))?;
+    avancar(total, total);
+    Ok(r)
+}
+
+/// Divide em pedaços de até `max` bytes, sempre no fim de uma linha (uma linha maior que `max` fica sozinha).
+fn dividir_por_linhas(texto: &str, max: usize) -> Vec<String> {
+    let mut partes = vec![];
+    let mut atual = String::new();
+    for linha in texto.lines() {
+        if !atual.is_empty() && atual.len() + linha.len() + 1 > max {
+            partes.push(std::mem::take(&mut atual));
+        }
+        if !atual.is_empty() {
+            atual.push('\n');
+        }
+        atual.push_str(linha);
+    }
+    if !atual.is_empty() {
+        partes.push(atual);
+    }
+    partes
+}
+
+fn formatar_parciais(parciais: &[Resumo]) -> String {
+    let mut t = String::from("[As partes abaixo são resumos parciais, em ordem, de uma única reunião longa. Junte-os em um só resumo: sem repetir, mantendo decisões, pendências e dúvidas de todas as partes.]\n");
+    for (i, p) in parciais.iter().enumerate() {
+        t += &format!("\n=== Parte {} ===\nTítulo: {}\nResumo: {}\n", i + 1, p.titulo, p.resumo);
+        for d in &p.decisoes { t += &format!("Decisão: {d}\n"); }
+        for q in &p.pendencias {
+            t += &format!("Pendência: {} (responsável: {}; prazo: {})\n", q.tarefa, q.responsavel.as_deref().unwrap_or("não dito"), q.prazo.as_deref().unwrap_or("não dito"));
+        }
+        for d in &p.duvidas { t += &format!("Dúvida: {d}\n"); }
+    }
+    t
 }
 
 /// Valida a pergunta e monta o texto do usuário (material + transcrição + pergunta).
@@ -334,8 +470,11 @@ pub(crate) fn mensagem_pergunta(pergunta: &str, material: &str, transcricao: &st
     ))
 }
 
-pub(crate) fn conteudo_resumo(transcricao: &str, material: &str) -> String {
+pub(crate) fn conteudo_resumo(transcricao: &str, material: &str, foco: &str) -> String {
     let mut c = String::new();
+    if !foco.trim().is_empty() {
+        c += &format!("Foco do resumo (o formato da resposta não muda): {}\n\n---\n\n", foco.trim());
+    }
     if !material.trim().is_empty() {
         c += &format!(
             "Material de apoio (use apenas para acertar nomes, siglas e termos; não é fala da reunião):\n{material}\n\n---\n\n"
@@ -362,13 +501,14 @@ mod testes {
         let conteudo = r#"{\"titulo\":\"T\",\"resumo\":\"R\",\"decisoes\":[],\"pendencias\":[{\"tarefa\":\"a\",\"responsavel\":null,\"prazo\":null}],\"duvidas\":[]}"#;
         let resposta: &'static str = Box::leak(format!(r#"{{"choices":[{{"message":{{"content":"{conteudo}"}}}}]}}"#).into_boxed_str());
         let (url, pedidos) = servidor_falso(200, resposta).await;
-        let r = OpenAi::com_url(url).resumir("[00:00:00] Eu: oi", "Pauta: contrato Alfa", "sk-teste", "m").await.unwrap();
+        let r = OpenAi::com_url(url).resumir("[00:00:00] Eu: oi", "Pauta: contrato Alfa", "Foco: bloqueios", "sk-teste", "m").await.unwrap();
         assert_eq!(r.titulo, "T");
         assert_eq!(r.pendencias[0].tarefa, "a");
         let p = pedidos.lock().unwrap()[0].clone();
         assert!(p.starts_with("POST /chat/completions"));
         assert!(p.contains("Bearer sk-teste") && p.contains("json_schema"));
         assert!(p.contains("contrato Alfa"), "o material vai junto com a transcrição");
+        assert!(p.contains("Foco do resumo") && p.contains("bloqueios"), "o foco do modelo de resumo vai junto");
     }
 
     #[tokio::test]
@@ -435,13 +575,66 @@ mod testes {
         assert!(pedidos.lock().unwrap()[0].contains("\"stream\":true"));
     }
 
+    #[test]
+    fn limpa_raciocinio_do_modelo() {
+        assert_eq!(limpar_raciocinio("<think>pensando</think>Resposta"), "Resposta");
+        assert_eq!(limpar_raciocinio("a <thinking>x\ny</thinking> b <think>z</think>c"), "a  b c");
+        assert_eq!(limpar_raciocinio("sem marcas"), "sem marcas");
+        assert_eq!(limpar_raciocinio("Ok. <think>ainda pensando"), "Ok. ", "bloco aberto fica escondido");
+        assert_eq!(limpar_raciocinio("Ok <think"), "Ok ", "marca chegando aos poucos");
+        assert_eq!(limpar_raciocinio("o <thinker> fala"), "o <thinker> fala", "outra marca não é raciocínio");
+    }
+
+    struct Contador(std::sync::Mutex<Vec<String>>, std::sync::atomic::AtomicUsize, usize);
+    #[async_trait]
+    impl Resumidor for Contador {
+        async fn resumir(&self, t: &str, _: &str, _: &str, _: &str, _: &str) -> Result<Resumo> {
+            let n = self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.0.lock().unwrap().push(t.to_string());
+            if n == self.2 { return Err(anyhow!("falha passageira")); }
+            Ok(Resumo { titulo: format!("T{n}"), resumo: format!("R{n}"), decisoes: vec![format!("D{n}")], pendencias: vec![], duvidas: vec![] })
+        }
+        async fn responder(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<String> { unreachable!() }
+    }
+
+    #[tokio::test]
+    async fn reuniao_longa_e_resumida_em_partes_e_juntada() {
+        let linhas: Vec<String> = (0..40).map(|i| format!("[00:00:{i:02}] Eu: {}", "palavra ".repeat(20))).collect();
+        let t = linhas.join("\n");
+        let r = Contador(Default::default(), Default::default(), usize::MAX);
+        let avisos = std::sync::Mutex::new(vec![]);
+        let res = resumir_em_partes(&r, &t, "", "", "k", "m", 2_000, &|a, b| avisos.lock().unwrap().push((a, b))).await.unwrap();
+        let chamadas = r.0.lock().unwrap().clone();
+        let partes = chamadas.len() - 1;
+        assert!(partes >= 3, "{partes}");
+        assert!(chamadas[..partes].iter().all(|c| c.len() <= 1_000 && !c.ends_with('\n')), "cada parte cabe e termina em linha inteira");
+        assert_eq!(chamadas[..partes].join("\n"), t, "nenhuma fala se perde nem se repete");
+        let juntada = chamadas.last().unwrap();
+        assert!(juntada.contains("=== Parte 1 ===") && juntada.contains("Decisão: D0") && juntada.contains(&format!("=== Parte {partes} ===")));
+        assert_eq!(res.titulo, format!("T{partes}"));
+        assert_eq!(avisos.lock().unwrap().last(), Some(&(partes + 1, partes + 1)));
+    }
+
+    #[tokio::test]
+    async fn parte_que_falha_tenta_de_novo_e_curta_vai_direto() {
+        let t = "[00:00:00] Eu: oi\n".repeat(300);
+        let r = Contador(Default::default(), Default::default(), 0);
+        resumir_em_partes(&r, &t, "", "", "k", "m", 2_000, &|_, _| {}).await.unwrap();
+        let c = r.0.lock().unwrap().clone();
+        assert_eq!(c[0], c[1], "a mesma parte foi tentada de novo");
+
+        let r = Contador(Default::default(), Default::default(), usize::MAX);
+        resumir_em_partes(&r, "curta", "", "", "k", "m", 2_000, &|_, _| {}).await.unwrap();
+        assert_eq!(r.0.lock().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn erros_claros() {
         let o = OpenAi::com_url("http://127.0.0.1:1");
-        assert!(o.resumir("x", "", "", "m").await.unwrap_err().to_string().contains("Chave"));
-        assert!(o.resumir("  ", "", "k", "m").await.unwrap_err().to_string().contains("vazia"));
+        assert!(o.resumir("x", "", "", "", "m").await.unwrap_err().to_string().contains("Chave"));
+        assert!(o.resumir("  ", "", "", "k", "m").await.unwrap_err().to_string().contains("vazia"));
         let (url, _) = servidor_falso(401, r#"{"error":{"message":"chave inválida"}}"#).await;
-        let e = OpenAi::com_url(url).resumir("x", "", "k", "m").await.unwrap_err().to_string();
+        let e = OpenAi::com_url(url).resumir("x", "", "", "k", "m").await.unwrap_err().to_string();
         assert!(e.contains("401") && e.contains("chave inválida"), "{e}");
     }
 }

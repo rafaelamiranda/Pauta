@@ -57,6 +57,13 @@
     iniciarReuniao: () => invoke('reuniao_iniciar'),
     pararReuniao: () => invoke('reuniao_parar'),
     reenviarEmail: (id) => invoke('reuniao_reenviar', { id }),
+    modelosResumo: () => invoke('modelos_resumo'),
+    sugestaoHardware: () => invoke('sugestao_hardware'),
+    retranscrever: (id) => invoke('conversa_retranscrever', { id }),
+    /** Envia o conteúdo do arquivo de áudio como corpo bruto; o nome vai codificado no cabeçalho. */
+    importarAudio: (nome, bytes) => invoke('audio_importar', bytes, { headers: { 'x-nome': encodeURIComponent(nome) } }),
+    aoReprocesso: ouvir('reuniao:reprocesso'),
+    aoRecuperada: ouvir('reuniao:recuperada'),
     idiomasTraducao: () => invoke('traducao_idiomas'),
     iniciarTraducao: (origem, destino, entrada) => invoke('traducao_iniciar', { origem, destino, entrada }),
     pararTraducao: (enviar) => invoke('traducao_parar', { enviar }),

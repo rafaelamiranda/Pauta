@@ -11,6 +11,7 @@ pub struct Fala {
 
 pub struct Segmentador {
     limiar_rms: f32, // volume mínimo para contar como fala (0 a 1)
+    piso_ruido: f32, // volume do ruído de fundo, estimado nos trechos sem fala
     silencio_ms: f64, // silêncio que encerra uma fala
     fala_minima_ms: f64, // falas mais curtas que isso são descartadas (ruído)
     maxima_ms: f64, // corte forçado para falas muito longas
@@ -26,6 +27,11 @@ pub struct Segmentador {
     falando: bool,
 }
 
+/// Quantas vezes o ruído de fundo a voz precisa superar para contar como fala.
+const FATOR_RUIDO: f32 = 3.0;
+/// O limite adaptativo nunca passa disso, para uma voz baixa não ser ignorada de vez.
+const LIMITE_MAXIMO: f32 = 0.08;
+
 fn ms(n: usize) -> f64 {
     n as f64 / TAXA as f64 * 1000.0
 }
@@ -40,6 +46,7 @@ impl Segmentador {
     pub fn new() -> Self {
         Self {
             limiar_rms: 0.012,
+            piso_ruido: 0.0,
             silencio_ms: 700.0,
             fala_minima_ms: 250.0,
             maxima_ms: 25000.0,
@@ -77,7 +84,17 @@ impl Segmentador {
     pub fn push(&mut self, pcm: &[i16], agora_ms: i64) -> Option<Fala> {
         let soma: f64 = pcm.iter().map(|&s| (s as f64 / 32768.0).powi(2)).sum();
         let rms = (soma / pcm.len().max(1) as f64).sqrt() as f32;
-        let voz = rms > self.limiar_rms;
+        // Em sala barulhenta (ventilador, teclado) o limite sobe junto com o ruído de fundo, para o chiado
+        // não virar "fala". O limite fixo continua valendo como mínimo.
+        let limiar = self.limiar_rms.max((self.piso_ruido * FATOR_RUIDO).min(LIMITE_MAXIMO));
+        let voz = rms > limiar;
+        // O piso desce na hora (o ruído parou), sobe devagar com trechos parecidos com ele e ignora trechos
+        // bem mais altos (fala), para uma voz não virar "ruído de fundo".
+        if self.piso_ruido == 0.0 || rms < self.piso_ruido {
+            self.piso_ruido = rms;
+        } else if rms < self.piso_ruido * 2.0 {
+            self.piso_ruido += (rms - self.piso_ruido) * 0.05;
+        }
 
         if !self.falando {
             if voz {
@@ -149,6 +166,19 @@ mod testes {
 
         seg.push(&bloco(FALA), 0); // 100 ms: curto demais
         for _ in 0..8 { assert!(seg.push(&bloco(0), 0).is_none()); }
+    }
+
+    #[test]
+    fn ruido_de_fundo_constante_nao_vira_fala_mas_a_voz_passa() {
+        let ruido = |v: i16| (0..1600).map(|i| if i % 2 == 0 { v } else { -v }).collect::<Vec<i16>>(); // rms ~ 0,02
+        let mut seg = Segmentador::new();
+        let mut falas = 0;
+        // o primeiro trecho de chiado ainda passa do limite fixo e abre uma fala; ela fecha e é descartada ao não ter voz
+        for _ in 0..40 { if seg.push(&ruido(650), 0).is_some() { falas += 1; } }
+        assert_eq!(falas, 0, "chiado contínuo não gera fala");
+        for _ in 0..6 { seg.push(&bloco(FALA), 0); }
+        for _ in 0..40 { if seg.push(&ruido(650), 0).is_some() { falas += 1; } }
+        assert_eq!(falas, 1, "a voz por cima do chiado é captada");
     }
 
     #[test]

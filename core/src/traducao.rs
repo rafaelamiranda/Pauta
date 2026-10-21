@@ -274,7 +274,7 @@ mod testes {
     struct Tradutor(bool);
     #[async_trait]
     impl Resumidor for Tradutor {
-        async fn resumir(&self, _: &str, _: &str, _: &str, _: &str) -> Result<Resumo> {
+        async fn resumir(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<Resumo> {
             Err(anyhow!("não usado"))
         }
         async fn responder(&self, _: &str, _: &str, _: &str, _: &str, _: &str) -> Result<String> {

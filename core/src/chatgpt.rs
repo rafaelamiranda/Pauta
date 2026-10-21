@@ -243,14 +243,14 @@ impl ChatGpt {
 
 #[async_trait]
 impl Resumidor for ChatGpt {
-    async fn resumir(&self, transcricao: &str, material: &str, _chave: &str, modelo: &str) -> Result<Resumo> {
+    async fn resumir(&self, transcricao: &str, material: &str, foco: &str, _chave: &str, modelo: &str) -> Result<Resumo> {
         if transcricao.trim().is_empty() {
             return Err(anyhow!("A transcrição está vazia."));
         }
         if transcricao.len() > LIMITE_CARACTERES {
             return Err(anyhow!("A transcrição é longa demais para resumir de uma vez."));
         }
-        let texto = self.gerar(INSTRUCOES, &conteudo_resumo(transcricao, material), Some(esquema()), modelo, None).await?;
+        let texto = self.gerar(INSTRUCOES, &conteudo_resumo(transcricao, material, foco), Some(esquema()), modelo, None).await?;
         serde_json::from_str(&texto).map_err(|e| anyhow!("O ChatGPT devolveu um resumo ilegível: {e}"))
     }
 
@@ -390,11 +390,11 @@ mod testes {
         let (api, pedidos) = servidor_falso(200, corpo).await;
         let (c, m) = cliente("x", "http://127.0.0.1:1/token", &api);
         guardar(&m, agora_s() + 3600);
-        let r = c.resumir("[00:00:00] Eu: oi", "", "", "gpt-5").await.unwrap();
+        let r = c.resumir("[00:00:00] Eu: oi", "", "", "", "gpt-5").await.unwrap();
         assert_eq!(r.titulo, "T");
         let p = pedidos.lock().unwrap()[0].clone();
         assert!(p.contains("\"json_schema\"") && p.contains("resumo_reuniao"), "{p}");
-        assert!(c.resumir("  ", "", "", "m").await.unwrap_err().to_string().contains("vazia"));
+        assert!(c.resumir("  ", "", "", "", "m").await.unwrap_err().to_string().contains("vazia"));
     }
 
     #[tokio::test]

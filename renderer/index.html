@@ -287,6 +287,36 @@
         <p class="nota">Preços em dólar, de referência: vieram de sites de terceiros, não da página oficial da OpenAI, e mudam. Confira em platform.openai.com/docs/pricing antes de decidir. A estimativa da análise supõe uma reunião de 1 hora com cerca de 15 mil tokens de texto lidos e 1 mil escritos; reuniões maiores custam mais.</p>
         </details>
         <details class="secao">
+        <summary>Resumo</summary>
+        <label>Tipo de reunião (modelo de resumo)<select id="modeloResumo"></select></label>
+        <p class="nota">O modelo muda o foco do resumo (o formato continua o mesmo: título, resumo, decisões, pendências e dúvidas). Para criar o seu, ponha um arquivo <code>modelos-resumo.json</code> na pasta de dados do app, com uma lista de <code>{"id", "nome", "foco"}</code>.</p>
+        <label>Quem resume e responde (quando não é no computador)
+          <select id="provedor">
+            <option value="openai">OpenAI (chave da API ou conta do ChatGPT)</option>
+            <option value="claude">Claude (Anthropic)</option>
+            <option value="compat">Outro serviço no formato da OpenAI (Groq, Ollama, OpenRouter...)</option>
+          </select>
+        </label>
+        <div id="bloco-claude" hidden>
+          <label>Chave da API do Claude<input type="password" id="claudeKey"></label>
+          <label>Modelo do Claude<input type="text" id="claudeModel"></label>
+        </div>
+        <div id="bloco-compat" hidden>
+          <label>Serviço
+            <select id="compatPreset">
+              <option value="">Personalizado</option>
+              <option value="https://api.groq.com/openai/v1">Groq</option>
+              <option value="http://localhost:11434/v1">Ollama (neste computador)</option>
+              <option value="https://openrouter.ai/api/v1">OpenRouter</option>
+            </select>
+          </label>
+          <label>Endereço (termina em /v1)<input type="text" id="compatUrl" placeholder="https://..."></label>
+          <label>Modelo<input type="text" id="compatModel"></label>
+          <label>Chave (o Ollama não pede)<input type="password" id="compatKey"></label>
+        </div>
+        <p class="nota" id="provedor-aviso">O texto da reunião é enviado ao serviço escolhido. A transcrição do áudio continua usando a OpenAI ou o Whisper local. Em "No computador", este ajuste não vale. O resumo pelo Claude e por serviços compatíveis foi testado só com servidores simulados, não com as contas reais.</p>
+        </details>
+        <details class="secao">
         <summary>E-mail (Gmail)</summary>
         <label>Seu Gmail (quem envia)<input type="email" id="smtpUser"></label>
         <label>Senha de app do Gmail<input type="password" id="smtpPass"></label>
@@ -299,6 +329,9 @@
         <label>Microfone<select id="microfone"></select></label>
         <label>Saída de áudio (som do computador)<select id="saida"></select></label>
         <label>Idioma da reunião (código, como pt, en, es)<input type="text" id="idioma" maxlength="5"></label>
+        <label><input type="checkbox" id="prepararAudio">Melhorar o áudio antes de transcrever (tirar ronco grave e levantar voz baixa)</label>
+        <label><input type="checkbox" id="guardarAudio">Guardar o áudio das falas neste computador</label>
+        <p class="nota">Desligado por padrão. Com ele ligado, o áudio das falas fica na pasta de dados do app, até você apagar a conversa. Serve para transcrever de novo (outro modelo ou idioma) e para não perder o que foi dito se o app cair. Avise os participantes de que o áudio está sendo gravado.</p>
         <label><input type="checkbox" id="dicaTermos">Usar nomes e siglas do material como dica na transcrição</label>
         <p class="nota">Ajuda a transcrever nomes próprios e siglas do material de apoio. Se notar frases estranhas na transcrição, desligue.</p>
         <label><input type="checkbox" id="identificarFalantes">Separar as pessoas em "Outros" (Pessoa 1, Pessoa 2...)</label>
@@ -313,6 +346,8 @@
         </details>
         <details class="secao" id="bloco-locais">
         <summary>Modelos no computador</summary>
+        <p class="nota" id="hardware-dica"></p>
+        <div class="acoes"><button class="botao sec" type="button" id="hardware-usar" hidden>Usar a sugestão</button></div>
         <div id="locais-corpo"></div>
         </details>
         <details class="secao">

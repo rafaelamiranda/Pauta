@@ -1,17 +1,24 @@
 //! Lógica do app de reuniões, sem dependência de interface.
 
+pub mod audio;
 pub mod baixar;
 pub mod chatgpt;
+pub mod claude;
 #[cfg(target_os = "linux")]
 pub mod captura_pulse;
+pub mod decodificar;
 pub mod deteccao;
 pub mod drive;
 pub mod exportar;
 pub mod falantes;
+pub mod hardware;
 pub mod locais;
 pub mod mail;
 pub mod material;
 pub mod meeting;
+pub mod modelos;
+pub mod preparo;
+pub mod reprocessar;
 pub mod resample;
 pub mod roteador;
 pub mod segmenter;

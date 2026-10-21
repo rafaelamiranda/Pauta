@@ -48,6 +48,8 @@ struct Estado {
     captura_traducao: Mutex<Option<audio::Captura>>,
     arquivo_material: PathBuf,
     arquivo_documentos: PathBuf,
+    /// Pasta de dados do app (banco, configurações, áudio guardado).
+    dados: PathBuf,
 }
 
 fn erro(e: impl std::fmt::Display) -> String {
@@ -111,7 +113,7 @@ async fn conversa(estado: State<'_, Estado>, id: String) -> Result<Value, String
     let store = estado.store.lock().map_err(erro)?;
     let sessao = store.obter_sessao(&id).map_err(erro)?;
     let falas = store.transcricao(&id).map_err(erro)?;
-    Ok(json!({ "sessao": sessao, "falas": falas }))
+    Ok(json!({ "sessao": sessao, "falas": falas, "temAudio": estado.reuniao.tem_audio(&id) }))
 }
 
 #[tauri::command]
@@ -513,6 +515,57 @@ async fn reuniao_reenviar(estado: State<'_, Estado>, id: String) -> Result<Value
     Ok(json!({ "ok": true }))
 }
 
+/// Modelos de resumo disponíveis: os do app e os que a pessoa pôs em `modelos-resumo.json` na pasta de dados.
+#[tauri::command]
+fn modelos_resumo(estado: State<'_, Estado>) -> Value {
+    json!(busca_core::modelos::todos(Some(&estado.dados.join("modelos-resumo.json"))))
+}
+
+/// O que o computador aguenta, e os modelos locais sugeridos para ele.
+#[tauri::command]
+fn sugestao_hardware() -> Value {
+    let m = busca_core::hardware::detectar();
+    json!({ "maquina": m, "sugestao": busca_core::hardware::sugerir(&m) })
+}
+
+/// Transcreve de novo o áudio guardado de uma conversa. O resultado chega pelo evento `reuniao:final`.
+#[tauri::command]
+async fn conversa_retranscrever(estado: State<'_, Estado>, id: String) -> Result<Value, String> {
+    if estado.capturando()? {
+        return Ok(json!({ "ok": false, "erro": "Finalize a reunião em andamento antes." }));
+    }
+    Ok(match estado.reuniao.retranscrever(&id).await {
+        Ok(()) => json!({ "ok": true }),
+        Err(e) => json!({ "ok": false, "erro": e.to_string() }),
+    })
+}
+
+/// Maior arquivo de áudio aceito na importação (ele passa inteiro pela memória).
+const LIMITE_AUDIO_IMPORTADO: usize = 500 * 1024 * 1024;
+
+/// Importa um arquivo de áudio como conversa nova. O conteúdo vai no corpo do pedido e o nome no cabeçalho `x-nome`.
+#[tauri::command]
+async fn audio_importar(estado: State<'_, Estado>, pedido: Request<'_>) -> Result<Value, String> {
+    if estado.capturando()? {
+        return Ok(json!({ "ok": false, "erro": "Finalize a reunião em andamento antes." }));
+    }
+    let nome = pedido.headers().get("x-nome").and_then(|v| v.to_str().ok()).map(decodificar_nome).unwrap_or_default();
+    let InvokeBody::Raw(bytes) = pedido.body() else { return Ok(json!({ "ok": false, "erro": "O arquivo não chegou." })) };
+    if bytes.len() > LIMITE_AUDIO_IMPORTADO {
+        return Ok(json!({ "ok": false, "erro": "O arquivo passa de 500 MB." }));
+    }
+    // só a extensão do nome é usada (para o leitor reconhecer o formato); o resto do caminho é nosso
+    let ext: String = nome.rsplit_once('.').map(|(_, e)| e.chars().filter(char::is_ascii_alphanumeric).take(5).collect()).unwrap_or_default();
+    let temp = estado.dados.join(format!("importando-{}.{}", uuid_curto(), if ext.is_empty() { "audio".into() } else { ext }));
+    std::fs::write(&temp, bytes).map_err(erro)?;
+    let r = estado.reuniao.importar_audio(&temp).await;
+    let _ = std::fs::remove_file(&temp);
+    Ok(match r {
+        Ok(id) => json!({ "ok": true, "id": id }),
+        Err(e) => json!({ "ok": false, "erro": e.to_string() }),
+    })
+}
+
 // ---- tradução em tempo real ----
 
 #[tauri::command]
@@ -610,12 +663,16 @@ async fn conversa_apagar(estado: State<'_, Estado>, id: String) -> Result<Value,
         Some(_) => store.apagar_sessao(&id).map(|()| json!({})).map_err(erro),
         None => Err("Conversa não encontrada.".to_string()),
     };
+    drop(store);
+    estado.reuniao.limpar_audio_orfao();
     Ok(resposta(r))
 }
 
 #[tauri::command]
 async fn conversas_apagar_todas(estado: State<'_, Estado>) -> Result<Value, String> {
-    Ok(resposta(estado.store.lock().map_err(erro)?.apagar_todas(USUARIO).map(|n| json!({ "apagadas": n })).map_err(erro)))
+    let r = estado.store.lock().map_err(erro)?.apagar_todas(USUARIO).map(|n| json!({ "apagadas": n })).map_err(erro);
+    estado.reuniao.limpar_audio_orfao();
+    Ok(resposta(r))
 }
 
 #[tauri::command]
@@ -624,7 +681,9 @@ async fn conversas_apagar_antigas(estado: State<'_, Estado>, dias: i64) -> Resul
         return Ok(json!({ "ok": false, "erro": "Informe um número de dias maior que zero." }));
     }
     let limite = busca_core::agora_ms() / 1000 - dias * 86_400;
-    Ok(resposta(estado.store.lock().map_err(erro)?.apagar_antes_de(USUARIO, limite).map(|n| json!({ "apagadas": n })).map_err(erro)))
+    let r = estado.store.lock().map_err(erro)?.apagar_antes_de(USUARIO, limite).map(|n| json!({ "apagadas": n })).map_err(erro);
+    estado.reuniao.limpar_audio_orfao();
+    Ok(resposta(r))
 }
 
 fn markdown_da_conversa(estado: &Estado, id: &str) -> Result<(String, String), String> {
@@ -837,6 +896,7 @@ fn main() {
                 emitir,
                 agora: Arc::new(busca_core::agora_ms),
                 diarizador: Some(Arc::new(DiarizadorOpenAi::new(Arc::new(move || cfg_chave.obter().openai_key)))),
+                pasta_dados: Some(dados.clone()),
             }));
             let cfg_significado = config.clone();
             let significado = Arc::new(Significado::new(Arc::new(move || cfg_significado.chave_significado())));
@@ -866,7 +926,15 @@ fn main() {
                     }
                 });
             }
-            app.manage(Estado { store, config, reuniao, drive, chatgpt, significado, atualizacao: Mutex::new(None), locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos });
+            app.manage(Estado { store, config, reuniao, drive, chatgpt, significado, atualizacao: Mutex::new(None), locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos, dados: dados.clone() });
+            // fecha reuniões que ficaram "em andamento" por uma queda e apaga áudio de conversas que não existem mais
+            {
+                let reuniao = app.state::<Estado>().reuniao.clone();
+                tauri::async_runtime::spawn(async move {
+                    reuniao.limpar_audio_orfao();
+                    reuniao.recuperar_orfas().await;
+                });
+            }
             #[cfg(target_os = "linux")]
             vigiar_reunioes(app.handle().clone());
 
@@ -945,7 +1013,8 @@ fn main() {
             traducao_idiomas, traducao_iniciar, traducao_parar, traducao_enviar_email, traducao_limpar,
             pendencias_listar, pendencia_marcar,
             conversa_apagar, conversas_apagar_todas, conversas_apagar_antigas,
-            exportar_texto, exportar_arquivo, backup_exportar
+            exportar_texto, exportar_arquivo, backup_exportar,
+            modelos_resumo, sugestao_hardware, conversa_retranscrever, audio_importar
         ])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o aplicativo")

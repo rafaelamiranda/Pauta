@@ -253,7 +253,45 @@
     const acoes = el('div', 'acoes');
     acoes.append(b);
     corpo.append(acoes);
+    corpo.append(blocoImportar());
   }
+
+  /** Andamento da importação de áudio em curso (o texto que a tela mostra). */
+  let estadoImportar = null;
+
+  function blocoImportar() {
+    const caixa = el('div');
+    const seletor = el('input');
+    seletor.type = 'file';
+    seletor.accept = 'audio/*,video/mp4,video/webm,.mkv,.m4a,.mp3,.wav,.flac,.ogg,.aac';
+    seletor.hidden = true;
+    const botao = el('button', 'botao sec', 'Importar um áudio...');
+    const msg = el('p', 'estado');
+    botao.addEventListener('click', () => seletor.click());
+    seletor.addEventListener('change', async () => {
+      const arq = seletor.files[0];
+      seletor.value = '';
+      if (!arq) return;
+      botao.disabled = true;
+      estadoImportar = msg;
+      msg.className = 'estado';
+      msg.textContent = `Enviando ${arq.name}...`;
+      const r = await window.busca.importarAudio(arq.name, new Uint8Array(await arq.arrayBuffer()));
+      estadoImportar = null;
+      if (r.ok) return; // a tela do resultado chega pelo evento "final"
+      if (!msg.isConnected) return telaInicial(r.erro); // a tela já tinha trocado para "Gerando o resumo..."
+      botao.disabled = false;
+      msg.className = 'erro';
+      msg.textContent = r.erro;
+    });
+    caixa.append(el('h2', null, 'Importar um áudio'), el('p', 'nota', 'Transforma uma gravação que você já tem (mp3, m4a, wav, flac, ogg, mkv) em uma conversa, com transcrição e resumo. Usa o material de apoio acima. Todas as vozes entram como "Outros".'), botao, seletor, msg);
+    return caixa;
+  }
+
+  window.busca.aoReprocesso(({ fase, parte, partes }) => {
+    if (!estadoImportar?.isConnected) return;
+    estadoImportar.textContent = fase === 'lendo' ? 'Lendo o áudio...' : fase === 'importando' ? `Transcrevendo: ${parte} de ${partes}...` : estadoImportar.textContent;
+  });
 
   async function iniciar(porAtalho = false) {
     if (fase === 'iniciando' || fase === 'gravando' || fase === 'finalizando') return;
@@ -345,11 +383,19 @@
     if (b) b.preenchido.style.width = `${Math.round(valor * 100)}%`;
   });
 
-  window.busca.aoEstado(({ fase: f }) => {
+  window.busca.aoEstado(({ fase: f, parte, partes }) => {
     if (f === 'resumindo') {
-      corpo.replaceChildren(el('p', 'estado', 'Gerando o resumo...'));
-      window.Mini.finalizando('Gerando o resumo...');
+      // reunião longa: o resumo sai em partes
+      const texto = partes > 1 ? `Gerando o resumo (parte ${parte} de ${partes})...` : 'Gerando o resumo...';
+      corpo.replaceChildren(el('p', 'estado', texto));
+      window.Mini.finalizando(texto);
     }
+  });
+
+  window.busca.aoRecuperada(({ ids }) => {
+    window.Conversas.recarregar();
+    window.Pendencias?.recarregar();
+    if (fase === 'inicio') corpo.prepend(el('p', 'nota', `O app foi fechado no meio ${ids.length === 1 ? 'de uma reunião' : `de ${ids.length} reuniões`}. O que já estava transcrito foi salvo e resumido: veja em Conversas.`));
   });
 
   window.busca.aoFalar(({ speaker, text }) => {

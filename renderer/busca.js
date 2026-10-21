@@ -250,8 +250,14 @@
     contagem.textContent = total === 1 ? '1 conversa' : `${total} conversas`;
   }
 
+  /** Onde mostrar o andamento da retranscrição em curso. */
+  let msgReprocesso = null;
+  window.busca.aoReprocesso(({ fase, parte, partes }) => {
+    if (fase === 'retranscrevendo' && msgReprocesso?.isConnected) msgReprocesso.textContent = `Transcrevendo de novo: ${parte} de ${partes}...`;
+  });
+
   async function abrirDetalhe(id) {
-    const { sessao, falas } = await window.busca.conversa(id);
+    const { sessao, falas, temAudio } = await window.busca.conversa(id);
     detalhe.replaceChildren();
     const voltar = el('button', 'botao sec', 'Voltar');
     voltar.addEventListener('click', fecharDetalhe);
@@ -288,6 +294,21 @@
       window.Pendencias?.recarregar();
     }, 'Confirmar: apagar para sempre');
     exportar.append(copiarBt, salvarBt, apagarBt, msg);
+    if (temAudio) {
+      const refazer = el('button', 'botao sec', 'Transcrever de novo');
+      refazer.title = 'Usa o áudio guardado e as configurações de agora (modelo, idioma). Só troca o texto se tudo der certo.';
+      confirmarDuplo(refazer, async () => {
+        refazer.disabled = true;
+        msg.className = 'estado';
+        msg.textContent = 'Transcrevendo de novo...';
+        msgReprocesso = msg;
+        const r = await window.busca.retranscrever(id);
+        if (!r.ok) { refazer.disabled = false; return dizer(r, ''); }
+        abrirDetalhe(id);
+        buscar(true);
+      }, 'Confirmar: trocar o texto desta conversa');
+      exportar.append(refazer);
+    }
     voltar.after(exportar);
     if (falas.length) {
       const enviar = el('button', 'botao sec', 'Enviar por e-mail');

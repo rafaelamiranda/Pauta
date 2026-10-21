@@ -72,7 +72,7 @@ async fn modelos_locais_de_verdade() {
         let local = OpenAi::local(url);
 
         let inicio = Instant::now();
-        let r = local.resumir(TRANSCRICAO, MATERIAL, "", "local").await;
+        let r = local.resumir(TRANSCRICAO, MATERIAL, "", "", "local").await;
         println!("[{acel}] resumo em {:.1}s: {r:#?}", inicio.elapsed().as_secs_f64());
         let r = r.expect("o servidor local precisa aceitar o esquema JSON do resumo");
         assert!(!r.titulo.is_empty() && !r.resumo.is_empty());

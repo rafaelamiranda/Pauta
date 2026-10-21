@@ -7,7 +7,7 @@ use crate::material::{compor, dica_de_termos, reduzir, Documento};
 use crate::segmenter::{Fala, Segmentador};
 use crate::settings::Config;
 use crate::store::{NovaSessao, Pendencia, Store};
-use crate::summary::{formatar_transcricao, Resumidor, Resumo};
+use crate::summary::{formatar_transcricao, limite_resumo, resumir_em_partes, Resumidor, Resumo};
 use crate::whisper::{sem_eco, Transcritor};
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
@@ -58,6 +58,19 @@ pub struct Dependencias {
     pub agora: Arc<dyn Fn() -> i64 + Send + Sync>,
     /// Separa os participantes em "Outros" (só a OpenAI faz isso); `None` desliga o recurso.
     pub diarizador: Option<Arc<dyn Diarizador>>,
+    /// Pasta de dados do app: guarda o áudio das falas (`audio/`) e os modelos de resumo da pessoa (`modelos-resumo.json`).
+    pub pasta_dados: Option<std::path::PathBuf>,
+}
+
+impl Dependencias {
+    /// Pasta onde fica o áudio das conversas.
+    pub fn pasta_audio(&self) -> Option<std::path::PathBuf> {
+        self.pasta_dados.as_ref().map(|p| p.join("audio"))
+    }
+
+    pub fn arquivo_modelos(&self) -> Option<std::path::PathBuf> {
+        self.pasta_dados.as_ref().map(|p| p.join("modelos-resumo.json"))
+    }
 }
 
 /// Tamanho máximo da lista de termos enviada como dica ao transcritor (em caracteres).
@@ -65,27 +78,51 @@ const TAMANHO_DICA: usize = 300;
 
 /// O que cada fala precisa saber da reunião para ser transcrita.
 #[derive(Clone)]
-struct ContextoFala {
+pub(crate) struct ContextoFala {
     /// Nomes e siglas do material, enviados como dica ao transcritor.
-    dica: String,
+    pub(crate) dica: String,
     /// Vozes já ouvidas em "Outros", em ordem. O lock também põe as falas numa fila, para o
     /// reconhecimento de cada voz usar o que as falas anteriores descobriram.
     falantes: Arc<tokio::sync::Mutex<Vec<Conhecido>>>,
 }
 
-struct Ativa {
+impl ContextoFala {
+    pub(crate) fn novo(dica: String) -> Self {
+        Self { dica, falantes: Default::default() }
+    }
+}
+
+pub(crate) struct Ativa {
     id: String,
     inicio: i64,
     mic: Segmentador,
     sistema: Segmentador,
-    tarefas: Vec<JoinHandle<()>>,
+    pub(crate) tarefas: Vec<JoinHandle<()>>,
     rt: tokio::runtime::Handle,
     ctx: ContextoFala,
+    /// Áudio das falas no disco (só com "guardar áudio" ligado).
+    gravadores: [Option<crate::audio::Gravador>; 2],
+}
+
+fn indice(f: Fonte) -> usize {
+    match f {
+        Fonte::Mic => 0,
+        Fonte::Sistema => 1,
+    }
+}
+
+/// O que sobrou de uma reunião depois do resumo.
+pub(crate) struct Saida {
+    pub titulo: String,
+    pub resumo: Option<Resumo>,
+    pub erro_resumo: Option<String>,
+    pub transcricao: String,
+    pub vazia: bool,
 }
 
 pub struct Reuniao {
-    dep: Dependencias,
-    ativa: Mutex<Option<Ativa>>,
+    pub(crate) dep: Dependencias,
+    pub(crate) ativa: Mutex<Option<Ativa>>,
     /// Material de apoio colado pela pessoa; vale para a reunião atual e a próxima.
     material: Mutex<String>,
     /// Documentos anexados (Google Drive ou arquivo); valem junto com o material colado.
@@ -117,17 +154,60 @@ fn fim_do_texto(t: &str, max: usize) -> &str {
 }
 
 /// Grava uma fala e avisa a tela. `falante`: "ME", "THEY" ou "THEY:Pessoa 2".
-fn guardar_fala(dep: &Dependencias, sessao: &str, texto: &str, falante: &str, timestamp: i64) {
+/// `ao_vivo`: avisa a tela da reunião em andamento (a retranscrição e a importação não mostram falas soltas).
+pub(crate) fn guardar_fala(dep: &Dependencias, sessao: &str, texto: &str, falante: &str, timestamp: i64, ao_vivo: bool) {
     let r = dep.store.lock().unwrap().adicionar_mensagem(&uuid::Uuid::new_v4().to_string(), sessao, texto, Some(falante), timestamp);
     if let Err(e) = r {
         (dep.emitir)("reuniao:aviso", json!(format!("Não foi possível gravar uma fala: {e}")));
     }
-    (dep.emitir)("reuniao:fala", json!({"speaker": falante, "text": texto, "timestamp": timestamp}));
+    if ao_vivo {
+        (dep.emitir)("reuniao:fala", json!({"speaker": falante, "text": texto, "timestamp": timestamp}));
+    }
 }
 
 fn data_local(ms: i64) -> String {
     use chrono::TimeZone;
     chrono::Local.timestamp_millis_opt(ms).single().map(|d| d.format("%d-%m-%Y").to_string()).unwrap_or_default()
+}
+
+/// Transcreve uma fala (separando as pessoas, se ligado) e grava o texto.
+/// Devolve `false` se a fala falhou (e o aviso já foi dado); fala só de ruído conta como sucesso.
+pub(crate) async fn transcrever_fala(dep: &Dependencias, id: &str, fonte: Fonte, fala: &Fala, ctx: &ContextoFala, ao_vivo: bool) -> bool {
+    let cfg = (dep.config)();
+    let dica = if cfg.dica_termos { ctx.dica.clone() } else { String::new() };
+    let pcm = if cfg.preparar_audio { crate::preparo::preparar(&fala.pcm) } else { fala.pcm.clone() };
+    let separar = fonte == Fonte::Sistema && cfg.identificar_falantes && !cfg.transcricao_local;
+    if let (true, Some(d)) = (separar, dep.diarizador.clone()) {
+        let mut registro = ctx.falantes.lock().await;
+        match d.diarizar(&pcm, &cfg.idioma, &registro).await {
+            Ok(trechos) => {
+                let partes = atribuir(&mut registro, &pcm, trechos);
+                drop(registro);
+                for p in partes {
+                    let falante = p.falante.map_or_else(|| "THEY".to_string(), |n| format!("THEY:{n}"));
+                    guardar_fala(dep, id, &p.texto, &falante, fala.inicio_ms + p.inicio_ms, ao_vivo);
+                }
+                return true;
+            }
+            Err(e) => {
+                drop(registro);
+                (dep.emitir)("reuniao:aviso", json!(format!("Não foi possível identificar quem falou: {e} Transcrevendo sem identificar.")));
+            }
+        }
+    }
+    match dep.transcritor.transcrever_dica(&pcm, &cfg.idioma, &dica).await {
+        Ok(texto) => {
+            let texto = sem_eco(texto, &dica);
+            if !texto.is_empty() {
+                guardar_fala(dep, id, &texto, fonte.falante(), fala.inicio_ms, ao_vivo);
+            }
+            true
+        }
+        Err(e) => {
+            (dep.emitir)("reuniao:aviso", json!(format!("Falha ao transcrever um trecho: {e}")));
+            false
+        }
+    }
 }
 
 impl Reuniao {
@@ -246,10 +326,19 @@ impl Reuniao {
             id: &id, user_id: &self.dep.usuario, ativa: true, started_at: inicio / 1000, ..Default::default()
         })?;
         self.dep.store.lock().unwrap().definir_contexto(&id, &self.material())?;
-        let ctx = ContextoFala { dica: dica_de_termos(&self.material(), TAMANHO_DICA), falantes: Default::default() };
+        let ctx = ContextoFala::novo(dica_de_termos(&self.material(), TAMANHO_DICA));
+        let mut gravadores = [None, None];
+        if let (true, Some(pasta)) = ((self.dep.config)().guardar_audio, self.dep.pasta_audio()) {
+            for f in [Fonte::Mic, Fonte::Sistema] {
+                match crate::audio::Gravador::abrir(&pasta, &id, f) {
+                    Ok(gr) => gravadores[indice(f)] = Some(gr),
+                    Err(e) => (self.dep.emitir)("reuniao:aviso", json!(format!("Não foi possível guardar o áudio: {e}"))),
+                }
+            }
+        }
         *g = Some(Ativa {
             id: id.clone(), inicio, mic: Segmentador::new(), sistema: Segmentador::new(),
-            tarefas: vec![], rt: tokio::runtime::Handle::current(), ctx,
+            tarefas: vec![], rt: tokio::runtime::Handle::current(), ctx, gravadores,
         });
         (self.dep.emitir)("reuniao:estado", json!({"fase": "gravando", "id": id}));
         Ok(id)
@@ -273,89 +362,92 @@ impl Reuniao {
             Fonte::Sistema => &mut a.sistema,
         };
         if let Some(fala) = seg.push(pcm, agora) {
+            self.gravar_audio(&mut a.gravadores[indice(fonte)], &fala);
             let t = self.transcrever(&a.rt, &a.id, fonte, fala, a.ctx.clone());
             a.tarefas.push(t);
+        }
+    }
+
+    fn gravar_audio(&self, g: &mut Option<crate::audio::Gravador>, fala: &Fala) {
+        if let Some(gr) = g {
+            if let Err(e) = gr.gravar(fala) {
+                *g = None; // não insiste num disco cheio ou sem permissão
+                (self.dep.emitir)("reuniao:aviso", json!(format!("O áudio parou de ser guardado: {e}")));
+            }
         }
     }
 
     fn transcrever(&self, rt: &tokio::runtime::Handle, id: &str, fonte: Fonte, fala: Fala, ctx: ContextoFala) -> JoinHandle<()> {
         let dep = self.dep.clone();
         let id = id.to_string();
-        rt.spawn(async move {
-            let cfg = (dep.config)();
-            let dica = if cfg.dica_termos { ctx.dica.clone() } else { String::new() };
-            let separar = fonte == Fonte::Sistema && cfg.identificar_falantes && !cfg.transcricao_local;
-            if let (true, Some(d)) = (separar, dep.diarizador.clone()) {
-                let mut registro = ctx.falantes.lock().await;
-                match d.diarizar(&fala.pcm, &cfg.idioma, &registro).await {
-                    Ok(trechos) => {
-                        let partes = atribuir(&mut registro, &fala.pcm, trechos);
-                        drop(registro);
-                        for p in partes {
-                            let falante = p.falante.map_or_else(|| "THEY".to_string(), |n| format!("THEY:{n}"));
-                            guardar_fala(&dep, &id, &p.texto, &falante, fala.inicio_ms + p.inicio_ms);
-                        }
-                        return;
-                    }
-                    Err(e) => {
-                        drop(registro);
-                        (dep.emitir)("reuniao:aviso", json!(format!("Não foi possível identificar quem falou: {e} Transcrevendo sem identificar.")));
-                    }
-                }
-            }
-            match dep.transcritor.transcrever_dica(&fala.pcm, &cfg.idioma, &dica).await {
-                Ok(texto) => {
-                    let texto = sem_eco(texto, &dica);
-                    if !texto.is_empty() {
-                        guardar_fala(&dep, &id, &texto, fonte.falante(), fala.inicio_ms);
-                    }
-                }
-                Err(e) => (dep.emitir)("reuniao:aviso", json!(format!("Falha ao transcrever um trecho: {e}"))),
-            }
-        })
+        rt.spawn(async move { transcrever_fala(&dep, &id, fonte, &fala, &ctx, true).await; })
     }
 
     pub async fn parar(&self) -> Result<()> {
         let a = self.ativa.lock().unwrap().take().ok_or_else(|| anyhow!("Nenhuma reunião em andamento."))?;
-        let Ativa { id, inicio, mut mic, mut sistema, mut tarefas, rt, ctx } = a;
-        let dep = &self.dep;
-        (dep.emitir)("reuniao:estado", json!({"fase": "finalizando"}));
+        let Ativa { id, inicio, mut mic, mut sistema, mut tarefas, rt, ctx, mut gravadores } = a;
+        (self.dep.emitir)("reuniao:estado", json!({"fase": "finalizando"}));
 
-        if let Some(f) = mic.flush() { tarefas.push(self.transcrever(&rt, &id, Fonte::Mic, f, ctx.clone())); }
-        if let Some(f) = sistema.flush() { tarefas.push(self.transcrever(&rt, &id, Fonte::Sistema, f, ctx)); }
+        if let Some(f) = mic.flush() {
+            self.gravar_audio(&mut gravadores[0], &f);
+            tarefas.push(self.transcrever(&rt, &id, Fonte::Mic, f, ctx.clone()));
+        }
+        if let Some(f) = sistema.flush() {
+            self.gravar_audio(&mut gravadores[1], &f);
+            tarefas.push(self.transcrever(&rt, &id, Fonte::Sistema, f, ctx));
+        }
         for t in tarefas {
             let _ = t.await;
         }
 
-        let falas = dep.store.lock().unwrap().transcricao(&id)?;
+        let fim = (self.dep.agora)();
+        let saida = self.resumir_e_encerrar(&id, inicio, fim).await?;
+        self.avisar_final(&id, &saida);
+        if !saida.vazia && (self.dep.config)().enviar_automatico {
+            self.enviar_por_email(&id, Some((saida.resumo, saida.erro_resumo))).await;
+        }
+        Ok(())
+    }
+
+    /// Gera o resumo da conversa `id` e a encerra no banco (sem avisar a tela nem enviar e-mail).
+    pub(crate) async fn resumir_e_encerrar(&self, id: &str, inicio: i64, fim: i64) -> Result<Saida> {
+        let dep = &self.dep;
+        let falas = dep.store.lock().unwrap().transcricao(id)?;
         let transcricao = formatar_transcricao(&falas);
-        let fim = (dep.agora)();
         let cfg = (dep.config)();
         let data = data_local(inicio);
 
         if falas.is_empty() {
-            dep.store.lock().unwrap().encerrar_sessao(&id, fim / 1000, Some("Reunião sem fala captada"), None, &[])?;
-            (dep.emitir)("reuniao:final", json!({"id": id, "vazia": true}));
-            return Ok(());
+            dep.store.lock().unwrap().encerrar_sessao(id, fim / 1000, Some("Reunião sem fala captada"), None, &[])?;
+            return Ok(Saida { titulo: "Reunião sem fala captada".into(), resumo: None, erro_resumo: None, transcricao, vazia: true });
         }
 
         (dep.emitir)("reuniao:estado", json!({"fase": "resumindo"}));
-        let (resumo, erro_resumo) = match dep.resumidor.resumir(&transcricao, &reduzir(&self.material(), fim_do_texto(&transcricao, CAUDA_CONSULTA), if cfg.analise_local { ORCAMENTO_MATERIAL_RESUMO_LOCAL } else { ORCAMENTO_MATERIAL_RESUMO }), &cfg.openai_key, &cfg.openai_model).await {
+        // o material gravado na conversa vale mais que o atual (ao retranscrever uma conversa antiga)
+        let guardado = dep.store.lock().unwrap().contexto(id).ok().flatten().filter(|c| !c.trim().is_empty());
+        let material = reduzir(&guardado.unwrap_or_else(|| self.material()), fim_do_texto(&transcricao, CAUDA_CONSULTA), if cfg.analise_local { ORCAMENTO_MATERIAL_RESUMO_LOCAL } else { ORCAMENTO_MATERIAL_RESUMO });
+        let foco = crate::modelos::foco(&cfg.modelo_resumo, dep.arquivo_modelos().as_deref());
+        let emitir = dep.emitir.clone();
+        let progresso = move |feitas: usize, total: usize| emitir("reuniao:estado", json!({"fase": "resumindo", "parte": feitas, "partes": total}));
+        let (resumo, erro_resumo) = match resumir_em_partes(&*dep.resumidor, &transcricao, &material, &foco, &cfg.openai_key, &cfg.openai_model, limite_resumo(&cfg), &progresso).await {
             Ok(r) => (Some(r), None),
             Err(e) => (None, Some(e.to_string())),
         };
 
         let titulo = resumo.as_ref().map(|r| r.titulo.clone()).filter(|t| !t.is_empty()).unwrap_or_else(|| format!("Reunião de {data}"));
         let pendencias: Vec<Pendencia> = resumo.as_ref().map(|r| r.pendencias.clone()).unwrap_or_default();
-        dep.store.lock().unwrap().encerrar_sessao(&id, fim / 1000, Some(&titulo), resumo.as_ref().map(|r| r.resumo.as_str()), &pendencias)?;
-        (dep.emitir)("reuniao:final", json!({
-            "id": id, "titulo": titulo, "resumo": resumo, "erroResumo": erro_resumo, "transcricao": transcricao
-        }));
+        dep.store.lock().unwrap().encerrar_sessao(id, fim / 1000, Some(&titulo), resumo.as_ref().map(|r| r.resumo.as_str()), &pendencias)?;
+        Ok(Saida { titulo, resumo, erro_resumo, transcricao, vazia: false })
+    }
 
-        if cfg.enviar_automatico {
-            self.enviar_por_email(&id, Some((resumo, erro_resumo))).await;
-        }
-        Ok(())
+    /// Mostra o resultado na tela (resumo, pendências, perguntas).
+    pub(crate) fn avisar_final(&self, id: &str, s: &Saida) {
+        let dados = if s.vazia {
+            json!({"id": id, "vazia": true})
+        } else {
+            json!({"id": id, "titulo": s.titulo, "resumo": s.resumo, "erroResumo": s.erro_resumo, "transcricao": s.transcricao})
+        };
+        (self.dep.emitir)("reuniao:final", dados);
     }
 
     /// Envia (ou reenvia) a transcrição de uma reunião já encerrada.
@@ -400,12 +492,12 @@ impl Reuniao {
 }
 
 #[cfg(test)]
-mod testes {
+pub(crate) mod testes {
     use super::*;
     use async_trait::async_trait;
     use std::sync::atomic::{AtomicI64, Ordering};
 
-    struct Fila(Mutex<Vec<&'static str>>);
+    pub(crate) struct Fila(pub Mutex<Vec<&'static str>>);
     #[async_trait]
     impl Transcritor for Fila {
         async fn transcrever(&self, _: &[i16]) -> Result<String> {
@@ -416,7 +508,7 @@ mod testes {
     struct ResumoFixo(Option<Resumo>, Mutex<Vec<String>>);
     #[async_trait]
     impl Resumidor for ResumoFixo {
-        async fn resumir(&self, _: &str, material: &str, _: &str, _: &str) -> Result<Resumo> {
+        async fn resumir(&self, _: &str, material: &str, _: &str, _: &str, _: &str) -> Result<Resumo> {
             self.1.lock().unwrap().push(format!("resumo|{material}"));
             self.0.clone().ok_or_else(|| anyhow!("sem rede"))
         }
@@ -435,7 +527,7 @@ mod testes {
         }
     }
 
-    type Eventos = Arc<Mutex<Vec<(String, Value)>>>;
+    pub(crate) type Eventos = Arc<Mutex<Vec<(String, Value)>>>;
 
     fn montar(falas: Vec<&'static str>, resumo: Option<Resumo>) -> (Reuniao, Eventos, Arc<Caixa>) {
         let eventos: Eventos = Default::default();
@@ -451,9 +543,30 @@ mod testes {
             config: Arc::new(|| Config { openai_key: "k".into(), smtp_user: "a".into(), smtp_pass: "b".into(), destinatario: "c".into(), ..Default::default() }),
             emitir: Arc::new(move |c, d| ev.lock().unwrap().push((c.to_string(), d))),
             agora: Arc::new(move || relogio.fetch_add(1000, Ordering::SeqCst)),
-            diarizador: None,
+            diarizador: None, pasta_dados: None,
         };
         (Reuniao::new(dep), eventos, caixa)
+    }
+
+    /// Reunião com pasta de dados (áudio guardado) e transcritor que o teste pode reabastecer.
+    pub(crate) fn montar_pasta(config: Config, falas: Vec<&'static str>) -> (Reuniao, Eventos, Arc<Fila>, std::path::PathBuf) {
+        let eventos: Eventos = Default::default();
+        let ev = eventos.clone();
+        let relogio = Arc::new(AtomicI64::new(1_000_000));
+        let pasta = std::env::temp_dir().join(format!("reu-{}", uuid::Uuid::new_v4()));
+        let fila = Arc::new(Fila(Mutex::new(falas)));
+        let dep = Dependencias {
+            store: Arc::new(Mutex::new(Store::em_memoria().unwrap())),
+            usuario: "u".into(),
+            transcritor: fila.clone(),
+            resumidor: Arc::new(ResumoFixo(None, Default::default())),
+            remetente: Arc::new(Arc::new(Caixa::default())),
+            config: Arc::new(move || config.clone()),
+            emitir: Arc::new(move |c, d| ev.lock().unwrap().push((c.to_string(), d))),
+            agora: Arc::new(move || relogio.fetch_add(1000, Ordering::SeqCst)),
+            diarizador: None, pasta_dados: Some(pasta.clone()),
+        };
+        (Reuniao::new(dep), eventos, fila, pasta)
     }
 
     fn falar(r: &Reuniao, fonte: Fonte) {
@@ -619,7 +732,7 @@ mod testes {
             config: Arc::new(move || config.clone()),
             emitir: Arc::new(move |c, d| ev.lock().unwrap().push((c.to_string(), d))),
             agora: Arc::new(move || relogio.fetch_add(1000, Ordering::SeqCst)),
-            diarizador,
+            diarizador, pasta_dados: None,
         };
         (Reuniao::new(dep), eventos)
     }
@@ -738,7 +851,7 @@ mod testes {
             config: Arc::new(|| Config { analise_local: true, ..Default::default() }),
             emitir: Arc::new(move |c, d| eventos.lock().unwrap().push((c.to_string(), d))),
             agora: Arc::new(move || relogio.fetch_add(1000, Ordering::SeqCst)),
-            diarizador: None,
+            diarizador: None, pasta_dados: None,
         };
         let r = Reuniao::new(dep);
         r.anexar_documento(Documento { id: "a".into(), nome: "Grande".into(), origem: "arquivo".into(), texto: "palavra solta. ".repeat(10_000) }).unwrap();
