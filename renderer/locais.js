@@ -65,7 +65,7 @@
         testar.disabled = true;
         msg.className = 'nota';
         msg.textContent = 'Ligando o modelo (o primeiro uso é mais lento)...';
-        const r = await window.busca.testarLocal(item.tipo);
+        const r = await window.busca.testarLocal(item.tipo, item.id);
         testar.disabled = false;
         msg.className = r.ok ? 'nota' : 'nota erro';
         msg.textContent = r.ok ? `Funcionando. Ligou e respondeu em ${r.segundos.toFixed(1).replace('.', ',')} s.` : r.erro;

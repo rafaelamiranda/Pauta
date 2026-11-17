@@ -190,9 +190,13 @@ async fn local_apagar(estado: State<'_, Estado>, id: String) -> Result<Value, St
 }
 
 /// Liga o servidor local e confere que ele responde. `tipo`: "whisper" ou "llm".
+/// `id`: o modelo a testar (o do cartão clicado); sem ele, testa o escolhido nos Ajustes.
 #[tauri::command]
-async fn local_testar(estado: State<'_, Estado>, tipo: String) -> Result<Value, String> {
-    let cfg = estado.config.obter();
+async fn local_testar(estado: State<'_, Estado>, tipo: String, id: Option<String>) -> Result<Value, String> {
+    let mut cfg = estado.config.obter();
+    if let Some(id) = id {
+        if tipo == "whisper" { cfg.whisper_local = id } else { cfg.llm_local = id }
+    }
     let r = if tipo == "whisper" { estado.locais.testar_whisper(&cfg).await } else { estado.locais.testar_llm(&cfg).await };
     Ok(resposta(r.map(|s| json!({ "segundos": s })).map_err(erro)))
 }

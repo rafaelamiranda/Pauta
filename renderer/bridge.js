@@ -22,7 +22,7 @@
     baixarLocal: (id) => invoke('local_baixar', { id }),
     cancelarLocal: (id) => invoke('local_cancelar', { id }),
     apagarLocal: (id) => invoke('local_apagar', { id }),
-    testarLocal: (tipo) => invoke('local_testar', { tipo }),
+    testarLocal: (tipo, id) => invoke('local_testar', { tipo, id }),
     aoProgressoLocal: ouvir('local:progresso'),
 
     listarDispositivos: () => invoke('dispositivos_listar'),
