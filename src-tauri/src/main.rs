@@ -50,6 +50,8 @@ struct Estado {
     arquivo_documentos: PathBuf,
     /// Pasta de dados do app (banco, configurações, áudio guardado).
     dados: PathBuf,
+    /// Robô que entrou no Google Meet para ler os nomes (só durante a reunião).
+    robo: Mutex<Option<busca_core::robo::Robo>>,
 }
 
 fn erro(e: impl std::fmt::Display) -> String {
@@ -472,8 +474,45 @@ async fn perguntar(app: tauri::AppHandle, estado: State<'_, Estado>, pergunta: S
 
 // ---- reunião ----
 
+/// Perfil do navegador do robô (login da conta do robô, cookies do Meet).
+fn perfil_do_robo(estado: &Estado) -> PathBuf {
+    estado.dados.join("robo-navegador")
+}
+
+/// Abre o navegador do robô na página de login do Google, para entrar uma vez na conta do robô.
 #[tauri::command]
-async fn reuniao_iniciar(estado: State<'_, Estado>) -> Result<Value, String> {
+fn robo_conta(app: tauri::AppHandle) -> Value {
+    let estado = app.state::<Estado>();
+    resposta(busca_core::robo::abrir_login(&perfil_do_robo(&estado)).map(|()| json!({})).map_err(erro))
+}
+
+/// Põe o robô na chamada do Meet. Se ele não abrir, a reunião segue sem nomes, com um aviso.
+fn iniciar_robo(app: &tauri::AppHandle, estado: &Estado, link: &str) -> Option<String> {
+    use busca_core::robo::{OpcoesRobo, Quadro, Robo};
+    let quadro = Arc::new(Quadro::default());
+    let app_h = app.clone();
+    let emitir: Emitir = Arc::new(move |canal, dados| { let _ = app_h.emit(canal, dados); });
+    let op = OpcoesRobo { link: link.to_string(), perfil: perfil_do_robo(estado), nome: estado.config.obter().robo_nome };
+    match Robo::iniciar(op, quadro.clone(), emitir) {
+        Ok(r) => {
+            estado.reuniao.usar_quadro(Some(quadro));
+            *estado.robo.lock().ok()? = Some(r);
+            None
+        }
+        Err(e) => Some(format!("O robô não entrou na chamada: {e} A reunião segue, com as outras vozes como \"Outros\".")),
+    }
+}
+
+/// Tira o robô da chamada (clica em sair e fecha o navegador dele) sem travar a tela.
+async fn encerrar_robo(estado: &Estado) {
+    let robo = estado.robo.lock().ok().and_then(|mut r| r.take());
+    if let Some(r) = robo {
+        let _ = tauri::async_runtime::spawn_blocking(move || r.encerrar()).await;
+    }
+}
+
+#[tauri::command]
+async fn reuniao_iniciar(app: tauri::AppHandle, estado: State<'_, Estado>, link: Option<String>) -> Result<Value, String> {
     let cfg = estado.config.obter();
     if estado.captura_traducao.lock().map_err(erro)?.is_some() {
         return Ok(json!({ "ok": false, "erro": "Pare a tradução em andamento antes de iniciar uma reunião." }));
@@ -491,9 +530,14 @@ async fn reuniao_iniciar(estado: State<'_, Estado>) -> Result<Value, String> {
         return Ok(json!({ "ok": false, "erro": e.to_string() }));
     }
     match audio::iniciar(estado.reuniao.clone(), cfg.microfone, cfg.saida) {
-        Ok((captura, avisos)) => {
+        Ok((captura, mut avisos)) => {
             *estado.captura.lock().map_err(erro)? = Some(captura);
-            Ok(json!({ "ok": true, "avisos": avisos }))
+            let link = link.unwrap_or_default();
+            let robo = !link.trim().is_empty();
+            if robo {
+                avisos.extend(iniciar_robo(&app, &estado, &link));
+            }
+            Ok(json!({ "ok": true, "avisos": avisos, "robo": robo }))
         }
         Err(e) => {
             estado.reuniao.descartar();
@@ -507,6 +551,7 @@ async fn reuniao_parar(estado: State<'_, Estado>) -> Result<Value, String> {
     // Fechar a captura primeiro: encerra as threads de áudio antes do resumo.
     let captura = estado.captura.lock().map_err(erro)?.take();
     drop(captura);
+    encerrar_robo(&estado).await;
     Ok(match estado.reuniao.parar().await {
         Ok(()) => json!({ "ok": true }),
         Err(e) => json!({ "ok": false, "erro": e.to_string() }),
@@ -726,6 +771,43 @@ async fn exportar_arquivo(app: tauri::AppHandle, estado: State<'_, Estado>, id: 
     })()))
 }
 
+fn titulo_da_conversa(estado: &Estado, id: &str) -> Result<String, String> {
+    let store = estado.store.lock().map_err(erro)?;
+    let sessao = store.obter_sessao(id).map_err(erro)?.ok_or("Conversa não encontrada.")?;
+    Ok(sessao.subject.filter(|t| !t.is_empty()).unwrap_or_else(|| "Reunião".into()))
+}
+
+/// Salva o áudio da reunião (WAV, microfone e som do computador juntos) na pasta Downloads.
+#[tauri::command]
+async fn conversa_audio_salvar(app: tauri::AppHandle, estado: State<'_, Estado>, id: String) -> Result<Value, String> {
+    Ok(resposta((|| {
+        let titulo = titulo_da_conversa(&estado, &id)?;
+        let pasta = app.path().download_dir().map_err(erro)?;
+        let caminho = caminho_livre(&pasta, &exportar::nome_de_arquivo(&titulo, "wav"));
+        match estado.reuniao.salvar_audio_wav(&id, &caminho).map_err(erro)? {
+            Some(ms) => Ok(json!({ "caminho": caminho.to_string_lossy(), "duracaoMs": ms })),
+            None => {
+                let _ = std::fs::remove_file(&caminho);
+                Err("Esta conversa não tem áudio guardado.".to_string())
+            }
+        }
+    })()))
+}
+
+/// Áudio da reunião (WAV) para tocar na tela. Volta como bytes; vazio se não há áudio guardado.
+#[tauri::command]
+async fn conversa_audio_ouvir(estado: State<'_, Estado>, id: String) -> Result<tauri::ipc::Response, String> {
+    let temp = estado.dados.join(format!("ouvindo-{}.wav", uuid_curto()));
+    let r = estado.reuniao.salvar_audio_wav(&id, &temp);
+    let bytes = std::fs::read(&temp).unwrap_or_default();
+    let _ = std::fs::remove_file(&temp);
+    match r {
+        Ok(Some(_)) => Ok(tauri::ipc::Response::new(bytes)),
+        Ok(None) => Ok(tauri::ipc::Response::new(Vec::new())),
+        Err(e) => Err(erro(e)),
+    }
+}
+
 /// Copia o banco de conversas para a pasta Downloads.
 #[tauri::command]
 async fn backup_exportar(app: tauri::AppHandle, estado: State<'_, Estado>) -> Result<Value, String> {
@@ -930,7 +1012,7 @@ fn main() {
                     }
                 });
             }
-            app.manage(Estado { store, config, reuniao, drive, chatgpt, significado, atualizacao: Mutex::new(None), locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos, dados: dados.clone() });
+            app.manage(Estado { store, config, reuniao, drive, chatgpt, significado, atualizacao: Mutex::new(None), locais, captura: Mutex::new(None), traducao, captura_traducao: Mutex::new(None), arquivo_material, arquivo_documentos, dados: dados.clone(), robo: Mutex::new(None) });
             // fecha reuniões que ficaram "em andamento" por uma queda e apaga áudio de conversas que não existem mais
             {
                 let reuniao = app.state::<Estado>().reuniao.clone();
@@ -1018,7 +1100,8 @@ fn main() {
             pendencias_listar, pendencia_marcar,
             conversa_apagar, conversas_apagar_todas, conversas_apagar_antigas,
             exportar_texto, exportar_arquivo, backup_exportar,
-            modelos_resumo, sugestao_hardware, conversa_retranscrever, audio_importar
+            modelos_resumo, sugestao_hardware, conversa_retranscrever, audio_importar,
+            conversa_audio_salvar, conversa_audio_ouvir, robo_conta
         ])
         .build(tauri::generate_context!())
         .expect("erro ao iniciar o aplicativo")

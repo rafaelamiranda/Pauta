@@ -17,9 +17,9 @@ O projeto nasceu de um estudo de como apps desse tipo fazem busca, transcrição
 |---|---|
 | Janela e atalho | Tauri 2 (Rust). Transparente, sem borda, sempre por cima. `Ctrl+Shift+Espaço` mostra ou esconde. |
 | Captura de áudio | Windows: `cpal`, com loopback do WASAPI. Linux: `parec` (PulseAudio ou PipeWire), com o monitor da saída. Microfone ("Eu") e som do computador ("Outros"). |
-| Divisão em falas | Detector de voz por volume (RMS). Fecha a fala após 700 ms de silêncio. |
+| Divisão em falas | Detector de voz por volume (RMS). Fecha a fala após 1,2 s de silêncio. Falas seguidas da mesma pessoa viram um parágrafo na tela, no e-mail e no Markdown. |
 | Transcrição | OpenAI `gpt-4o-transcribe`, ou whisper.cpp no próprio computador (opcional). Nomes e siglas do material vão como dica ao transcritor. |
-| Identificação de falantes | Opcional, só com a OpenAI: `gpt-4o-transcribe-diarize` separa as pessoas no som do computador. |
+| Identificação de falantes | Opcional, só com a OpenAI: `gpt-4o-transcribe-diarize` separa as pessoas no som do computador. Ou o robô do Google Meet, que lê o nome de quem fala na própria chamada. |
 | Resumo, pendências e perguntas | OpenAI `gpt-4o-mini`, ou llama.cpp no próprio computador (opcional). |
 | Busca | SQLite FTS5. Ignora acento e maiúscula, aceita início de palavra. Mais a busca por significado (embeddings `text-embedding-3-small` da OpenAI), opcional. |
 | Google Drive | API do Drive, somente leitura. Login pelo navegador (OAuth com PKCE). |
@@ -102,12 +102,21 @@ Conclusão honesta: o modelo local funciona de ponta a ponta e é rápido, princ
 - **Resumo de reunião longa:** acima do limite do modelo, o app resume por partes (cada parte tenta 2 vezes) e junta os resumos. Mostra "parte X de Y".
 - **Modelos de resumo:** Reunião comum, daily, retrospectiva, comercial e acompanhamento de projeto mudam o foco do resumo; o formato (título, resumo, decisões, pendências, dúvidas) não muda. Para criar o seu, ponha `modelos-resumo.json` na pasta de dados do app: uma lista de `{"id", "nome", "foco"}`.
 - **Outros provedores de resumo e perguntas:** Claude (Anthropic) e qualquer serviço no formato da OpenAI (Groq, Ollama, OpenRouter...). Testados só com servidores simulados.
-- **Guardar o áudio (desligado por padrão):** permite **Transcrever de novo** uma conversa (a transcrição antiga só é trocada se todos os trechos forem transcritos) e não perder o que foi dito se o app cair. Ao reabrir, reuniões interrompidas são fechadas e resumidas sem enviar e-mail.
+- **Guardar o áudio (ligado por padrão desde a 0.8):** ao final da reunião, e em cada conversa, dá para **ouvir** a reunião e **salvar o áudio** (.wav, microfone e som do computador juntos, cada fala no horário certo) em Downloads. Só as falas são guardadas: o silêncio entre elas sai como silêncio. São cerca de 115 MB por hora de reunião. Quem tinha a opção desligada na 0.7 passa a tê-la ligada uma vez (o padrão antigo era desligado); se desligar de novo, fica desligada. Também permite **Transcrever de novo** uma conversa (a transcrição antiga só é trocada se todos os trechos forem transcritos) e não perder o que foi dito se o app cair. Ao reabrir, reuniões interrompidas são fechadas e resumidas sem enviar e-mail.
 - **Importar um áudio** (mp3, m4a, wav, flac, ogg, mkv): vira uma conversa com transcrição e resumo; todas as vozes entram como "Outros". Limite de 500 MB.
 - **Áudio mais limpo:** antes de transcrever, o app tira o ronco grave e levanta o volume de quem fala baixo (pode ser desligado). O limite de voz do detector passou a acompanhar o ruído de fundo da sala. Isso **não** é o detector neural Silero nem supressão de ruído por rede neural: foi feito em código simples e testado só com sinais sintéticos, não com reuniões reais.
 - **Sugestão de modelos locais:** em Ajustes › Modelos no computador, o app lê a memória, os núcleos e o Vulkan e sugere modelos. É uma regra simples, não um teste. A memória só é lida no Linux; no Windows a sugestão cai no padrão.
 - **Silero VAD e RNNoise (experimentais, desligados por padrão):** em Ajustes › Áudio e idioma. O **Silero VAD v5** (detector de voz neural, MIT, Silero Team) foi reescrito em Rust, sem ONNX Runtime: os pesos ficam em `core/assets/silero_v5_16k.f32`, gerados por `scripts/gerar-silero.py`, e o resultado foi conferido contra o ONNX oficial (diferença menor que 0,002 em 36 janelas; cerca de 1e-5 em fala sintética). O **RNNoise** vem da crate `nnnoiseless` (BSD-3-Clause, derivada do RNNoise da Xiph). Não valem na aba Tradução. Para comparar com um áudio seu: `cargo run --release -p busca_core --example comparar_audio -- reuniao.mp3`.
 - **Limpeza do raciocínio:** blocos `<think>...</think>` escritos por alguns modelos são removidos das respostas.
+
+## Robô do Google Meet (nomes de quem fala)
+
+Na tela de nova reunião, cole o link do Meet. O app abre o Chrome, o Edge ou o Chromium do computador com um perfil só do robô (`robo-navegador` na pasta de dados), entra na chamada sem microfone, sem câmera e sem som, e a cada 250 ms lê os quadros dos participantes. As falas do som do computador ganham o nome de quem o Meet mostrava falando naquele horário (precisa ser a maioria das leituras durante a fala). A lista de participantes vai para o começo do material da conversa: o resumo e as perguntas usam os nomes.
+
+- **Conta:** sem login, o robô entra como convidado com o nome de Ajustes › Robô do Google Meet, e alguém precisa aceitá-lo. Com uma conta Google só dele, clique em **Entrar com a conta do robô**, faça o login uma vez e feche a janela.
+- **Ao finalizar** a reunião, o robô clica em sair e o navegador dele fecha.
+- **Limites:** só Google Meet. O Meet não tem um jeito oficial de dizer quem fala: o robô usa os seletores que robôs de código aberto usam hoje (`data-participant-id`, `span.notranslate` e classes como `Oaajhc`, do projeto Vexa). Se o Google mudar a página, os nomes param de aparecer e o app avisa no fim da reunião; a transcrição continua. Só lê quem aparece na tela do Meet. O microfone do usuário continua como "Eu".
+- **Testado** com o Chrome 155 de verdade numa página que imita a do Meet (entrar como convidado, ler nomes, achar quem fala, sair e fechar). **Não foi testado numa chamada real do Meet.**
 
 ## Estrutura
 

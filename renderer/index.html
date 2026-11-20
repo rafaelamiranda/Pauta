@@ -340,11 +340,19 @@
         <label><input type="checkbox" id="reduzirRuido">Reduzir ruído de fundo com RNNoise (rede neural, experimental)</label>
         <p class="nota">Tira ventilador, ar-condicionado e chiado antes de transcrever. Pode comer o fim de palavras fracas; se a transcrição piorar, desligue. Vale para a reunião, a importação e "Transcrever de novo". Não vale na aba Tradução.</p>
         <label><input type="checkbox" id="guardarAudio">Guardar o áudio das falas neste computador</label>
-        <p class="nota">Desligado por padrão. Com ele ligado, o áudio das falas fica na pasta de dados do app, até você apagar a conversa. Serve para transcrever de novo (outro modelo ou idioma) e para não perder o que foi dito se o app cair. Avise os participantes de que o áudio está sendo gravado.</p>
+        <p class="nota">Ligado por padrão. O áudio das falas fica na pasta de dados do app, até você apagar a conversa. Ao final da reunião dá para ouvir e salvar o áudio (.wav) em Downloads, transcrever de novo (outro modelo ou idioma) e não perder o que foi dito se o app cair. Avise os participantes de que o áudio está sendo gravado.</p>
         <label><input type="checkbox" id="dicaTermos">Usar nomes e siglas do material como dica na transcrição</label>
         <p class="nota">Ajuda a transcrever nomes próprios e siglas do material de apoio. Se notar frases estranhas na transcrição, desligue.</p>
         <label><input type="checkbox" id="identificarFalantes">Separar as pessoas em "Outros" (Pessoa 1, Pessoa 2...)</label>
         <p class="nota">Só com a transcrição da OpenAI (não vale na transcrição local). Usa um modelo próprio, mais caro, só no som do computador. Reconhece até 4 vozes e pode errar quando duas pessoas se parecem.</p>
+        </details>
+        <details class="secao">
+        <summary>Robô do Google Meet (nomes de quem fala)</summary>
+        <p class="nota">Na tela de nova reunião, cole o link do Meet. O app abre o Chrome ou o Edge com um perfil só do robô, entra na chamada sem microfone, sem câmera e sem som, e lê os nomes de quem participa e de quem está falando. As falas do som do computador ganham o nome da pessoa no lugar de "Outros". Só Google Meet por enquanto.</p>
+        <p class="nota">Sem conta, o robô entra como convidado com o nome abaixo, e alguém da reunião precisa aceitá-lo. Com uma conta Google só para ele (recomendado em reuniões da sua empresa), entre uma vez pelo botão abaixo, faça o login e feche a janela.</p>
+        <label>Nome do robô como convidado<input type="text" id="roboNome" maxlength="60"></label>
+        <div class="acoes"><button class="botao sec" type="button" id="robo-conta">Entrar com a conta do robô</button><span id="robo-conta-estado" class="estado"></span></div>
+        <p class="nota">O Google Meet não tem um jeito oficial de dizer quem está falando: o robô lê a página, e uma mudança do Google pode fazer os nomes pararem de aparecer (a transcrição continua). Avise os participantes de que há um robô de anotações na chamada.</p>
         </details>
         <details class="secao">
         <summary>Google Drive</summary>

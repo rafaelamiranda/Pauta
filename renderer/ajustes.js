@@ -5,7 +5,7 @@
   const { confirmarDuplo } = window.UI;
   const form = document.getElementById('form-ajustes');
   const estado = document.getElementById('ajustes-estado');
-  const campos = ['openaiKey', 'chatgptModel', 'openaiModel', 'transcricaoModel', 'smtpUser', 'smtpPass', 'destinatario', 'idioma', 'driveClientId', 'driveClientSecret', 'claudeKey', 'claudeModel', 'compatUrl', 'compatModel', 'compatKey'];
+  const campos = ['openaiKey', 'chatgptModel', 'openaiModel', 'transcricaoModel', 'smtpUser', 'smtpPass', 'destinatario', 'idioma', 'driveClientId', 'driveClientSecret', 'claudeKey', 'claudeModel', 'compatUrl', 'compatModel', 'compatKey', 'roboNome'];
   const segredos = ['openaiKey', 'smtpPass', 'driveClientSecret', 'claudeKey', 'compatKey'];
   const $ = (id) => document.getElementById(id);
 
@@ -215,6 +215,12 @@
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     salvar();
+  });
+
+  $('robo-conta').addEventListener('click', async () => {
+    const r = await window.busca.roboConta();
+    $('robo-conta-estado').className = r.ok ? 'estado' : 'erro';
+    $('robo-conta-estado').textContent = r.ok ? 'Janela aberta. Entre na conta do robô e feche a janela ao terminar.' : r.erro;
   });
 
   $('chatgpt-botao').addEventListener('click', async () => {

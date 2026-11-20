@@ -33,6 +33,9 @@ pub struct Segmentador {
 const FATOR_RUIDO: f32 = 3.0;
 /// O limite adaptativo nunca passa disso, para uma voz baixa não ser ignorada de vez.
 const LIMITE_MAXIMO: f32 = 0.08;
+/// Silêncio que encerra uma fala na reunião. Pausas de respiração e de "deixa eu pensar" passam de 700 ms;
+/// cortar nelas quebrava frases ao meio e o transcritor recebia pedaços sem contexto.
+pub const SILENCIO_REUNIAO_MS: f64 = 1200.0;
 
 fn ms(n: usize) -> f64 {
     n as f64 / TAXA as f64 * 1000.0
@@ -67,7 +70,7 @@ impl Segmentador {
 
     /// Segmentador do jeito que os Ajustes pedem: detector de voz por volume ou neural.
     pub fn da_config(c: &crate::settings::Config) -> Self {
-        let s = Self::new();
+        let s = Self::new().com_silencio_ms(SILENCIO_REUNIAO_MS);
         if c.vad == "silero" { s.com_silero() } else { s }
     }
 

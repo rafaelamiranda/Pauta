@@ -21,6 +21,7 @@ pub mod modelos;
 pub mod preparo;
 pub mod reprocessar;
 pub mod resample;
+pub mod robo;
 pub mod roteador;
 pub mod segmenter;
 #[cfg(target_os = "linux")]

@@ -54,7 +54,9 @@
     perguntar: (pergunta, id, pedido) => invoke('perguntar', { pergunta, id: id ?? null, pedido: pedido ?? null }),
     aoPerguntaParcial: ouvir('pergunta:parcial'),
 
-    iniciarReuniao: () => invoke('reuniao_iniciar'),
+    iniciarReuniao: (link) => invoke('reuniao_iniciar', { link: link || null }),
+    roboConta: () => invoke('robo_conta'),
+    aoRobo: ouvir('robo:estado'),
     pararReuniao: () => invoke('reuniao_parar'),
     reenviarEmail: (id) => invoke('reuniao_reenviar', { id }),
     modelosResumo: () => invoke('modelos_resumo'),
@@ -84,6 +86,8 @@
     textoDaConversa: (id) => invoke('exportar_texto', { id }),
     salvarConversaEmArquivo: (id) => invoke('exportar_arquivo', { id }),
     exportarBackup: () => invoke('backup_exportar'),
+    salvarAudio: (id) => invoke('conversa_audio_salvar', { id }),
+    ouvirAudio: (id) => invoke('conversa_audio_ouvir', { id }),
 
     aoAtalhoReuniao: ouvir('atalho:reuniao'),
     aoReuniaoDetectada: ouvir('reuniao:detectada'),

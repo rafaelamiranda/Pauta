@@ -84,6 +84,29 @@
   /** Quem falou: "ME" é "Eu"; "THEY:Pessoa 2" é "Pessoa 2"; o resto é "Outros". */
   const rotulo = (speaker) => (speaker === 'ME' ? 'Eu' : speaker?.startsWith('THEY:') && speaker.length > 5 ? speaker.slice(5) : 'Outros');
 
+  // Falas seguidas da mesma pessoa viram um parágrafo, como na transcrição exportada (summary.rs, agrupar_falas).
+  const JUNTAR_ATE_MS = 45000;
+  const PARAGRAFO_MAXIMO = 1500;
+  /** Acrescenta a fala em `caixa`: continua o último parágrafo se for a mesma pessoa, senão abre outro. */
+  function acrescentarFala(caixa, { speaker, text, timestamp }) {
+    const texto = (text || '').trim();
+    if (!texto) return;
+    const ultima = caixa.lastElementChild;
+    const quem = String(speaker ?? '');
+    if (ultima?.classList.contains('fala') && ultima.dataset.quem === quem
+      && timestamp - Number(ultima.dataset.ultima) <= JUNTAR_ATE_MS && ultima.corpo.textContent.length + texto.length < PARAGRAFO_MAXIMO) {
+      ultima.corpo.textContent += ` ${texto}`;
+      ultima.dataset.ultima = timestamp;
+      return;
+    }
+    const p = el('div', speaker === 'ME' ? 'fala' : 'fala outros');
+    p.dataset.quem = quem;
+    p.dataset.ultima = timestamp;
+    p.corpo = el('span', null, texto);
+    p.append(el('b', null, rotulo(speaker)), p.corpo);
+    caixa.append(p);
+  }
+
   // A resposta chega aos poucos: um único ouvinte repassa o texto parcial para a caixa que fez o pedido.
   const parciais = new Map();
   window.busca.aoPerguntaParcial(({ pedido, texto }) => parciais.get(pedido)?.(texto));
@@ -153,7 +176,48 @@
     return caixa;
   }
 
-  window.UI = { el, renderResumo, caixaPergunta, confirmarDuplo, copiar, rotulo };
+  /** Áudio da reunião: ouvir aqui ou salvar o .wav em Downloads. */
+  function blocoAudio(id) {
+    const caixa = el('div');
+    const acoes = el('div', 'acoes');
+    const ouvir = el('button', 'botao sec', 'Ouvir a reunião');
+    const salvar = el('button', 'botao sec', 'Salvar áudio em Downloads (.wav)');
+    const msg = el('span', 'estado');
+    ouvir.addEventListener('click', async () => {
+      ouvir.disabled = true;
+      msg.className = 'estado';
+      msg.textContent = 'Montando o áudio...';
+      try {
+        const bytes = await window.busca.ouvirAudio(id);
+        if (!bytes.byteLength) throw new Error('Esta conversa não tem áudio guardado.');
+        const player = el('audio');
+        player.controls = true;
+        player.src = URL.createObjectURL(new Blob([bytes], { type: 'audio/wav' }));
+        player.style.width = '100%';
+        caixa.append(player);
+        ouvir.remove();
+        if (msg.textContent === 'Montando o áudio...') msg.textContent = '';
+      } catch (e) {
+        ouvir.disabled = false;
+        msg.className = 'erro';
+        msg.textContent = String(e.message || e);
+      }
+    });
+    salvar.addEventListener('click', async () => {
+      salvar.disabled = true;
+      msg.className = 'estado';
+      msg.textContent = 'Salvando...';
+      const r = await window.busca.salvarAudio(id);
+      salvar.disabled = false;
+      msg.className = r.ok ? 'estado' : 'erro';
+      msg.textContent = r.ok ? `Salvo em ${r.caminho}` : r.erro;
+    });
+    acoes.append(ouvir, salvar, msg);
+    caixa.append(acoes);
+    return caixa;
+  }
+
+  window.UI = { el, renderResumo, caixaPergunta, confirmarDuplo, copiar, rotulo, acrescentarFala, blocoAudio };
 
   /** Converte "[palavra]" do trecho em <mark>, sem usar innerHTML. */
   function comDestaque(texto) {
@@ -265,13 +329,12 @@
     renderResumo(detalhe, { resumo: sessao.overview, pendencias: sessao.pending });
 
     detalhe.append(el('h2', null, 'Perguntar'), caixaPergunta(id));
+    if (temAudio) detalhe.append(el('h2', null, 'Áudio'), blocoAudio(id));
     detalhe.append(el('h2', null, 'Transcrição'));
     if (!falas.length) detalhe.append(el('p', 'estado', 'Sem transcrição.'));
-    for (const f of falas) {
-      const p = el('div', f.speaker === 'ME' ? 'fala' : 'fala outros');
-      p.append(el('b', null, rotulo(f.speaker)), f.text);
-      detalhe.append(p);
-    }
+    const textoFalas = el('div');
+    for (const f of falas) acrescentarFala(textoFalas, f);
+    detalhe.append(textoFalas);
     const exportar = el('div', 'acoes');
     const copiarBt = el('button', 'botao sec', 'Copiar');
     const salvarBt = el('button', 'botao sec', 'Salvar em Downloads (.md)');

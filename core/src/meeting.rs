@@ -84,12 +84,24 @@ pub(crate) struct ContextoFala {
     /// Vozes já ouvidas em "Outros", em ordem. O lock também põe as falas numa fila, para o
     /// reconhecimento de cada voz usar o que as falas anteriores descobriram.
     falantes: Arc<tokio::sync::Mutex<Vec<Conhecido>>>,
+    /// Quem o robô do Meet viu falando, e quando. Dá o nome real às falas do som do computador.
+    pub(crate) quadro: Option<Arc<crate::robo::Quadro>>,
 }
 
 impl ContextoFala {
     pub(crate) fn novo(dica: String) -> Self {
-        Self { dica, falantes: Default::default() }
+        Self { dica, falantes: Default::default(), quadro: None }
     }
+
+    /// Nome de quem o Meet mostrou falando entre `ini` e `fim`, se o robô estiver na chamada.
+    fn nome_no_meet(&self, ini: i64, fim: i64) -> Option<String> {
+        self.quadro.as_ref()?.quem_falou(ini, fim).map(|n| n.replace(['\n', '\r'], " ")).filter(|n| !n.trim().is_empty())
+    }
+}
+
+/// Duração de um trecho de PCM a 16 kHz, em ms.
+fn duracao_ms(pcm: &[i16]) -> i64 {
+    pcm.len() as i64 * 1000 / crate::resample::TAXA as i64
 }
 
 pub(crate) struct Ativa {
@@ -129,6 +141,8 @@ pub struct Reuniao {
     documentos: Mutex<Vec<Documento>>,
     /// Última vez que o volume de cada fonte foi enviado à tela (mic, sistema).
     ultimo_nivel: Mutex<[i64; 2]>,
+    /// Linha do tempo do robô do Meet para a próxima reunião (ou a atual).
+    quadro: Mutex<Option<Arc<crate::robo::Quadro>>>,
 }
 
 /// Quanto do material entra numa pergunta (em bytes). Acima disso, só os trechos mais relevantes.
@@ -185,8 +199,12 @@ pub(crate) async fn transcrever_fala(dep: &Dependencias, id: &str, fonte: Fonte,
             Ok(trechos) => {
                 let partes = atribuir(&mut registro, &pcm, trechos);
                 drop(registro);
-                for p in partes {
-                    let falante = p.falante.map_or_else(|| "THEY".to_string(), |n| format!("THEY:{n}"));
+                let fim_fala = duracao_ms(&fala.pcm);
+                for (i, p) in partes.iter().enumerate() {
+                    // o nome que o Meet mostrava vale mais que "Pessoa 1"
+                    let fim = partes.get(i + 1).map_or(fim_fala, |q| q.inicio_ms);
+                    let nome = ctx.nome_no_meet(fala.inicio_ms + p.inicio_ms, fala.inicio_ms + fim).or_else(|| p.falante.clone());
+                    let falante = nome.map_or_else(|| "THEY".to_string(), |n| format!("THEY:{n}"));
                     guardar_fala(dep, id, &p.texto, &falante, fala.inicio_ms + p.inicio_ms, ao_vivo);
                 }
                 return true;
@@ -201,7 +219,9 @@ pub(crate) async fn transcrever_fala(dep: &Dependencias, id: &str, fonte: Fonte,
         Ok(texto) => {
             let texto = sem_eco(texto, &dica);
             if !texto.is_empty() {
-                guardar_fala(dep, id, &texto, fonte.falante(), fala.inicio_ms, ao_vivo);
+                let nome = if fonte == Fonte::Sistema { ctx.nome_no_meet(fala.inicio_ms, fala.inicio_ms + duracao_ms(&fala.pcm)) } else { None };
+                let falante = nome.map_or_else(|| fonte.falante().to_string(), |n| format!("THEY:{n}"));
+                guardar_fala(dep, id, &texto, &falante, fala.inicio_ms, ao_vivo);
             }
             true
         }
@@ -216,7 +236,16 @@ impl Reuniao {
     pub fn new(dep: Dependencias) -> Self {
         Self {
             dep, ativa: Mutex::new(None), material: Mutex::new(String::new()),
-            documentos: Mutex::new(vec![]), ultimo_nivel: Mutex::new([0; 2]),
+            documentos: Mutex::new(vec![]), ultimo_nivel: Mutex::new([0; 2]), quadro: Mutex::new(None),
+        }
+    }
+
+    /// Liga (ou desliga) o robô do Meet na reunião em andamento: as próximas falas do som do computador
+    /// passam a receber o nome de quem o Meet mostra falando.
+    pub fn usar_quadro(&self, q: Option<Arc<crate::robo::Quadro>>) {
+        *self.quadro.lock().unwrap() = q.clone();
+        if let Some(a) = self.ativa.lock().unwrap().as_mut() {
+            a.ctx.quadro = q;
         }
     }
 
@@ -329,7 +358,8 @@ impl Reuniao {
         })?;
         self.dep.store.lock().unwrap().definir_contexto(&id, &self.material())?;
         let cfg_ini = (self.dep.config)();
-        let ctx = ContextoFala::novo(dica_de_termos(&self.material(), TAMANHO_DICA));
+        let mut ctx = ContextoFala::novo(dica_de_termos(&self.material(), TAMANHO_DICA));
+        ctx.quadro = self.quadro.lock().unwrap().clone();
         let mut gravadores = [None, None];
         if let (true, Some(pasta)) = (cfg_ini.guardar_audio, self.dep.pasta_audio()) {
             for f in [Fonte::Mic, Fonte::Sistema] {
@@ -402,6 +432,9 @@ impl Reuniao {
         for t in tarefas {
             let _ = t.await;
         }
+        if let Some(q) = self.quadro.lock().unwrap().take() {
+            self.anotar_participantes(&id, &q);
+        }
 
         let fim = (self.dep.agora)();
         let saida = self.resumir_e_encerrar(&id, inicio, fim).await?;
@@ -410,6 +443,24 @@ impl Reuniao {
             self.enviar_por_email(&id, Some((saida.resumo, saida.erro_resumo))).await;
         }
         Ok(())
+    }
+
+    /// Põe a lista de participantes lida pelo robô no começo do material da conversa: o resumo usa os nomes
+    /// (inclusive nos responsáveis das pendências) e as perguntas sobre quem participou têm resposta.
+    fn anotar_participantes(&self, id: &str, q: &crate::robo::Quadro) {
+        let nomes = q.participantes();
+        if nomes.is_empty() {
+            return;
+        }
+        if !q.viu_alguem_falar() {
+            (self.dep.emitir)("reuniao:aviso", json!("O robô viu os participantes, mas não conseguiu ver quem falava (o Google Meet pode ter mudado a página). As falas ficaram como \"Outros\"."));
+        }
+        let store = self.dep.store.lock().unwrap();
+        let material = store.contexto(id).ok().flatten().unwrap_or_default();
+        let texto = format!("Participantes da reunião (lista do Google Meet): {}.\n\n{material}", nomes.join(", "));
+        if let Err(e) = store.definir_contexto(id, texto.trim_end()) {
+            (self.dep.emitir)("reuniao:aviso", json!(format!("Não foi possível guardar a lista de participantes: {e}")));
+        }
     }
 
     /// Gera o resumo da conversa `id` e a encerra no banco (sem avisar a tela nem enviar e-mail).
@@ -448,7 +499,7 @@ impl Reuniao {
         let dados = if s.vazia {
             json!({"id": id, "vazia": true})
         } else {
-            json!({"id": id, "titulo": s.titulo, "resumo": s.resumo, "erroResumo": s.erro_resumo, "transcricao": s.transcricao})
+            json!({"id": id, "titulo": s.titulo, "resumo": s.resumo, "erroResumo": s.erro_resumo, "transcricao": s.transcricao, "temAudio": self.tem_audio(id)})
         };
         (self.dep.emitir)("reuniao:final", dados);
     }
@@ -780,6 +831,27 @@ pub(crate) mod testes {
     }
 
     #[tokio::test]
+    async fn robo_do_meet_da_o_nome_real_a_quem_fala_no_som_do_computador() {
+        let (r, eventos) = montar_com(Config::default(), Arc::new(Fila(Mutex::new(vec!["Eu respondo", "Bom dia a todos"]))), None);
+        let q = Arc::new(crate::robo::Quadro::default());
+        let todos = vec!["Ana Souza".to_string(), "Bruno".to_string()];
+        // o relógio de teste anda 1 s por bloco de áudio; a Ana aparece falando o tempo todo
+        for t in (0..3_000_000).step_by(250) { q.registrar(t, vec!["Ana Souza".into()], &todos); }
+        r.usar_quadro(Some(q));
+        let id = r.iniciar().unwrap();
+        falar(&r, Fonte::Sistema);
+        for _ in 0..14 { r.receber_audio(Fonte::Sistema, &[0i16; 1600]); }
+        falar(&r, Fonte::Mic);
+        r.parar().await.unwrap();
+        let falas = r.dep.store.lock().unwrap().transcricao(&id).unwrap();
+        let quem: Vec<_> = falas.iter().map(|f| (f.speaker.clone().unwrap(), f.text.clone())).collect();
+        assert_eq!(quem, [("THEY:Ana Souza".to_string(), "Bom dia a todos".to_string()), ("ME".into(), "Eu respondo".into())], "{:?}", eventos.lock().unwrap());
+        let ctx = r.dep.store.lock().unwrap().contexto(&id).unwrap().unwrap();
+        assert!(ctx.starts_with("Participantes da reunião (lista do Google Meet): Ana Souza, Bruno."), "{ctx}");
+        assert!(r.quadro.lock().unwrap().is_none(), "o robô não passa para a próxima reunião");
+    }
+
+    #[tokio::test]
     async fn outros_ganham_nome_por_pessoa_e_o_microfone_continua_eu() {
         use crate::falantes::Trecho;
         let t = |f: &str, x: &str, a: f64, b: f64| Trecho { falante: f.into(), texto: x.into(), inicio_s: a, fim_s: b };
@@ -793,7 +865,7 @@ pub(crate) mod testes {
         let (r, eventos) = montar_com(cfg, Arc::new(Fila(Mutex::new(vec!["Eu falo aqui"]))), Some(voz.clone()));
         let id = r.iniciar().unwrap();
         for _ in 0..50 { r.receber_audio(Fonte::Sistema, &[6000i16; 1600]); }
-        for _ in 0..8 { r.receber_audio(Fonte::Sistema, &[0i16; 1600]); } // silêncio fecha a primeira fala
+        for _ in 0..14 { r.receber_audio(Fonte::Sistema, &[0i16; 1600]); } // silêncio fecha a primeira fala
         for _ in 0..10 { r.receber_audio(Fonte::Sistema, &[6000i16; 1600]); }
         falar(&r, Fonte::Mic);
         r.parar().await.unwrap();

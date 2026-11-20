@@ -59,6 +59,11 @@ pub struct Config {
     pub modelo_resumo: String,
     /// Guarda o áudio das falas no computador, para retranscrever depois e recuperar reuniões interrompidas.
     pub guardar_audio: bool,
+    /// O áudio guardado passou a vir ligado (0.8). Arquivos antigos, sem esta marca, ligam uma vez.
+    #[serde(default)]
+    pub audio_padrao_v2: bool,
+    /// Nome com que o robô entra no Google Meet quando não está logado numa conta.
+    pub robo_nome: String,
     /// Tira o ronco grave e levanta o volume de quem fala baixo antes de transcrever.
     pub preparar_audio: bool,
     /// Detector de voz: "volume" (padrão) ou "silero" (rede neural).
@@ -104,7 +109,9 @@ impl Default for Config {
             busca_significado: true,
             detectar_reuniao: false,
             modelo_resumo: crate::modelos::PADRAO.into(),
-            guardar_audio: false,
+            guardar_audio: true,
+            audio_padrao_v2: true,
+            robo_nome: "Pauta (anotações)".into(),
             preparar_audio: true,
             vad: "volume".into(),
             reduzir_ruido: false,
@@ -115,6 +122,15 @@ impl Default for Config {
             claude_model: "claude-sonnet-5-5".into(),
             claude_key: String::new(),
         }
+    }
+}
+
+/// Até a 0.7 o áudio vinha desligado e o valor ia para o arquivo em todo salvamento, então um `false` antigo
+/// quase sempre é o padrão, não uma escolha. Liga uma vez; depois disso vale o que a pessoa escolher.
+fn ligar_audio_uma_vez(c: &mut Config) {
+    if !c.audio_padrao_v2 {
+        c.guardar_audio = true;
+        c.audio_padrao_v2 = true;
     }
 }
 
@@ -156,6 +172,7 @@ impl Configuracoes {
     /// Valores completos, com segredos (uso interno).
     pub fn obter(&self) -> Config {
         let mut c: Config = serde_json::from_value(self.ler_arquivo()).unwrap_or_default();
+        ligar_audio_uma_vez(&mut c);
         c.openai_key = self.segredos.ler(SEGREDO_OPENAI).unwrap_or_default();
         c.smtp_pass = self.segredos.ler(SEGREDO_SMTP).unwrap_or_default();
         c.compat_key = self.segredos.ler(SEGREDO_COMPAT).unwrap_or_default();
@@ -222,6 +239,7 @@ impl Configuracoes {
             "detectarReuniao": c.detectar_reuniao,
             "modeloResumo": c.modelo_resumo,
             "guardarAudio": c.guardar_audio,
+            "roboNome": c.robo_nome,
             "prepararAudio": c.preparar_audio,
             "vad": c.vad,
             "reduzirRuido": c.reduzir_ruido,
@@ -236,6 +254,7 @@ impl Configuracoes {
     /// Salva os campos recebidos (nomes em camelCase, como a tela envia). Segredo vazio mantém o anterior.
     pub fn salvar(&self, novos: &Value) -> Result<()> {
         let mut c: Config = serde_json::from_value(self.ler_arquivo()).unwrap_or_default();
+        ligar_audio_uma_vez(&mut c);
         let texto = |k: &str| novos[k].as_str().map(str::to_owned);
         if let Some(v) = texto("openaiModel").filter(|v| !v.is_empty()) { c.openai_model = v; }
         if let Some(v) = texto("chatgptModel").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()) { c.chatgpt_model = v; }
@@ -258,6 +277,7 @@ impl Configuracoes {
         if let Some(v) = novos["detectarReuniao"].as_bool() { c.detectar_reuniao = v; }
         if let Some(v) = texto("modeloResumo").map(|v| v.trim().to_string()).filter(|v| !v.is_empty() && v.len() <= 60) { c.modelo_resumo = v; }
         if let Some(v) = novos["guardarAudio"].as_bool() { c.guardar_audio = v; }
+        if let Some(v) = texto("roboNome").map(|v| v.trim().chars().take(60).collect::<String>()) { c.robo_nome = v; }
         if let Some(v) = novos["prepararAudio"].as_bool() { c.preparar_audio = v; }
         if let Some(v) = texto("vad").filter(|v| v == "volume" || v == "silero") { c.vad = v; }
         if let Some(v) = novos["reduzirRuido"].as_bool() { c.reduzir_ruido = v; }
@@ -363,12 +383,27 @@ mod testes {
     }
 
     #[test]
+    fn audio_desligado_de_versao_antiga_liga_uma_vez_e_depois_respeita_a_escolha() {
+        let pasta = std::env::temp_dir().join(format!("cfg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&pasta).unwrap();
+        let arquivo = pasta.join("config.json");
+        std::fs::write(&arquivo, r#"{"guardar_audio": false, "idioma": "pt"}"#).unwrap();
+        let s = Configuracoes::new(arquivo, Arc::new(Memoria::default()));
+        assert!(s.obter().guardar_audio, "arquivo da 0.7 passa a guardar o áudio");
+        s.salvar(&json!({"idioma": "en"})).unwrap();
+        assert!(s.obter().guardar_audio, "salvar outro campo não desfaz");
+        s.salvar(&json!({"guardarAudio": false})).unwrap();
+        assert!(!s.obter().guardar_audio, "desligar depois vale");
+        let _ = std::fs::remove_dir_all(pasta);
+    }
+
+    #[test]
     fn provedores_modelo_de_resumo_e_audio() {
         let pasta = std::env::temp_dir().join(format!("cfg-{}", uuid::Uuid::new_v4()));
         let arquivo = pasta.join("config.json");
         let s = Configuracoes::new(arquivo.clone(), Arc::new(Memoria::default()));
         let c = s.obter();
-        assert_eq!((c.provedor.as_str(), c.modelo_resumo.as_str(), c.guardar_audio, c.preparar_audio), ("openai", "padrao", false, true), "áudio guardado começa desligado");
+        assert_eq!((c.provedor.as_str(), c.modelo_resumo.as_str(), c.guardar_audio, c.preparar_audio), ("openai", "padrao", true, true), "áudio guardado começa ligado");
         assert_eq!((c.vad.as_str(), c.reduzir_ruido), ("volume", false), "as redes neurais de áudio começam desligadas");
         s.salvar(&json!({"vad": "silero", "reduzirRuido": true})).unwrap();
         assert_eq!((s.obter().vad.as_str(), s.obter().reduzir_ruido), ("silero", true));

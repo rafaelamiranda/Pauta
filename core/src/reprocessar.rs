@@ -22,6 +22,15 @@ impl Reuniao {
         self.dep.pasta_audio().is_some_and(|p| crate::audio::existe(&p, id))
     }
 
+    /// Grava em `destino` o áudio da conversa inteira (WAV, microfone e som do computador juntos).
+    /// Devolve a duração em ms, ou `None` se não há áudio guardado.
+    pub fn salvar_audio_wav(&self, id: &str, destino: &std::path::Path) -> anyhow::Result<Option<i64>> {
+        match self.dep.pasta_audio() {
+            Some(p) => crate::audio::salvar_reuniao_wav(&p, id, destino),
+            None => Ok(None),
+        }
+    }
+
     /// Apaga o áudio das conversas que não existem mais. Chamar depois de apagar conversas e ao abrir o app.
     pub fn limpar_audio_orfao(&self) {
         if let Some(p) = self.dep.pasta_audio() {
@@ -178,7 +187,7 @@ mod testes {
 
     fn falar_e_calar(r: &Reuniao, fonte: Fonte) {
         for _ in 0..6 { r.receber_audio(fonte, &[6000i16; 1600]); }
-        for _ in 0..8 { r.receber_audio(fonte, &[0i16; 1600]); }
+        for _ in 0..14 { r.receber_audio(fonte, &[0i16; 1600]); }
     }
 
     fn texto(r: &Reuniao, id: &str) -> Vec<String> {
@@ -216,7 +225,7 @@ mod testes {
 
     #[tokio::test]
     async fn sem_a_opcao_ligada_nao_guarda_audio_e_nao_da_para_retranscrever() {
-        let (r, _, _, pasta) = montar_pasta(Config::default(), vec!["oi"]);
+        let (r, _, _, pasta) = montar_pasta(Config { guardar_audio: false, ..Default::default() }, vec!["oi"]);
         let id = r.iniciar().unwrap();
         falar_e_calar(&r, Fonte::Mic);
         r.parar().await.unwrap();

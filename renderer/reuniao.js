@@ -2,7 +2,7 @@
 
 // Aba "Reunião": material de apoio, captura do áudio, transcrição ao vivo e resumo no final.
 (() => {
-  const { el, renderResumo, caixaPergunta, confirmarDuplo, rotulo } = window.UI;
+  const { el, renderResumo, caixaPergunta, confirmarDuplo, acrescentarFala, blocoAudio } = window.UI;
   const corpo = document.getElementById('reuniao-corpo');
   const abaReuniao = document.getElementById('aba-reuniao');
   const LIMITE_ARQUIVO = 25 * 1024 * 1024;
@@ -14,6 +14,8 @@
   let ao_vivo = null; // elemento com as falas
   let estadoEmail = null;
   let barras = null; // { mic, sistema } durante a gravação
+  let linkMeet = ''; // link do Google Meet para o robô ler os nomes (opcional)
+  let estadoRobo = null; // linha com a situação do robô durante a gravação
 
   const hms = (ms) => {
     const s = Math.floor(ms / 1000);
@@ -248,6 +250,15 @@
     corpo.append(slot);
     blocoMaterial().then((b) => slot.append(b));
     corpo.append(el('h2', null, 'Perguntar'), caixaPergunta(null));
+    corpo.append(el('h2', null, 'Nomes de quem fala (Google Meet)'));
+    corpo.append(el('p', 'nota', 'Opcional. Cole o link da chamada e um robô entra nela só para ler os nomes: as falas do som do computador ganham o nome da pessoa no lugar de "Outros". Veja Ajustes › Robô do Google Meet.'));
+    const link = document.createElement('input');
+    link.type = 'text';
+    link.placeholder = 'https://meet.google.com/abc-defg-hij';
+    link.setAttribute('aria-label', 'Link do Google Meet');
+    link.value = linkMeet;
+    link.addEventListener('input', () => { linkMeet = link.value.trim(); });
+    corpo.append(link);
     const b = el('button', 'botao', 'Iniciar reunião');
     b.addEventListener('click', () => iniciar());
     const acoes = el('div', 'acoes');
@@ -299,7 +310,7 @@
     esconderSugestao();
     corpo.replaceChildren(el('p', 'estado', 'Iniciando o motor de transcrição...'));
     await window.Ajustes.recarregar();
-    const r = await window.busca.iniciarReuniao();
+    const r = await window.busca.iniciarReuniao(linkMeet);
     if (!r.ok) {
       telaInicial(r.erro);
       if (porAtalho) window.busca.mostrarJanela();
@@ -307,7 +318,7 @@
     }
     gravando = true;
     window.Mini.gravando(Date.now());
-    telaGravando(r.avisos || []);
+    telaGravando(r.avisos || [], r.robo);
   }
 
   function medidor(rotulo) {
@@ -320,7 +331,7 @@
     return linha;
   }
 
-  function telaGravando(avisos) {
+  function telaGravando(avisos, robo) {
     fase = 'gravando';
     inicio = Date.now();
     abaReuniao.replaceChildren(el('span', 'gravando-ponto'), 'Reunião');
@@ -334,6 +345,8 @@
     barras = { mic: medidor('Microfone'), sistema: medidor('Som do computador') };
     corpo.append(barras.mic, barras.sistema);
     avisos.forEach((a) => corpo.append(el('p', 'nota erro', a)));
+    estadoRobo = robo ? el('p', 'estado', 'Robô do Meet: abrindo o navegador...') : null;
+    if (estadoRobo) corpo.append(estadoRobo);
     corpo.append(el('h2', null, 'Perguntar'), caixaPergunta(null));
     const det = el('details');
     det.append(el('summary', null, 'Material de apoio'));
@@ -398,11 +411,15 @@
     if (fase === 'inicio') corpo.prepend(el('p', 'nota', `O app foi fechado no meio ${ids.length === 1 ? 'de uma reunião' : `de ${ids.length} reuniões`}. O que já estava transcrito foi salvo e resumido: veja em Conversas.`));
   });
 
-  window.busca.aoFalar(({ speaker, text }) => {
+  window.busca.aoRobo(({ fase, texto }) => {
+    if (!estadoRobo?.isConnected) return;
+    estadoRobo.className = fase === 'erro' ? 'erro' : 'estado';
+    estadoRobo.textContent = `Robô do Meet: ${texto}`;
+  });
+
+  window.busca.aoFalar((fala) => {
     if (!ao_vivo) return;
-    const p = el('div', speaker === 'ME' ? 'fala' : 'fala outros');
-    p.append(el('b', null, rotulo(speaker)), text);
-    ao_vivo.append(p);
+    acrescentarFala(ao_vivo, fala);
     corpo.scrollTop = corpo.scrollHeight;
   });
 
@@ -418,6 +435,8 @@
     } else {
       corpo.append(el('h2', null, f.titulo));
       renderResumo(corpo, { ...f.resumo, erroResumo: f.erroResumo });
+      if (f.temAudio) corpo.append(el('h2', null, 'Áudio da reunião'), blocoAudio(f.id));
+      else corpo.append(el('p', 'nota', 'O áudio desta reunião não foi guardado. Para guardar nas próximas, ligue "Guardar o áudio" nos Ajustes.'));
       corpo.append(el('h2', null, 'Perguntar'), caixaPergunta(f.id));
       corpo.append(el('h2', null, 'E-mail'));
       estadoEmail = el('p', 'estado', window.Ajustes.pronto.email ? 'Aguardando envio...' : 'Não enviado: e-mail não configurado nos Ajustes.');

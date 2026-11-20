@@ -119,10 +119,37 @@ pub fn rotulo_falante(falante: Option<&str>) -> String {
     }
 }
 
-/// Texto da transcrição: "[00:01:05] Eu: ...".
+/// Falas seguidas da mesma pessoa até esse intervalo (de um início ao outro) viram um parágrafo só.
+const JUNTAR_ATE_MS: i64 = 45_000;
+/// Parágrafo maior que isso começa outro, para a leitura e as citações por horário continuarem úteis.
+const PARAGRAFO_MAXIMO: usize = 1_500;
+
+/// Junta as falas seguidas da mesma pessoa num parágrafo, como numa conversa escrita. O detector de voz
+/// fecha uma fala a cada pausa, então uma frase só podia virar três linhas. O horário é o da primeira fala.
+pub fn agrupar_falas(falas: &[FalaGravada]) -> Vec<FalaGravada> {
+    let mut saida: Vec<FalaGravada> = Vec::with_capacity(falas.len());
+    let mut ultima_ts = i64::MIN;
+    for f in falas {
+        let texto = f.text.trim();
+        if texto.is_empty() {
+            continue;
+        }
+        match saida.last_mut() {
+            Some(p) if p.speaker == f.speaker && f.timestamp - ultima_ts <= JUNTAR_ATE_MS && p.text.len() + texto.len() < PARAGRAFO_MAXIMO => {
+                p.text.push(' ');
+                p.text.push_str(texto);
+            }
+            _ => saida.push(FalaGravada { speaker: f.speaker.clone(), text: texto.to_string(), timestamp: f.timestamp }),
+        }
+        ultima_ts = f.timestamp;
+    }
+    saida
+}
+
+/// Texto da transcrição: "[00:01:05] Eu: ...", um parágrafo por vez que a pessoa fala.
 pub fn formatar_transcricao(falas: &[FalaGravada]) -> String {
     let Some(base) = falas.first().map(|f| f.timestamp) else { return String::new() };
-    falas
+    agrupar_falas(falas)
         .iter()
         .map(|f| format!("[{}] {}: {}", hms(f.timestamp, base), rotulo_falante(f.speaker.as_deref()), f.text))
         .collect::<Vec<_>>()
@@ -494,6 +521,20 @@ mod testes {
         let f = |s: &str, t: &str, ts| FalaGravada { speaker: Some(s.into()), text: t.into(), timestamp: ts };
         let t = formatar_transcricao(&[f("ME", "Bom dia", 1000), f("THEY", "Bom dia, tudo bem?", 66000)]);
         assert_eq!(t, "[00:00:00] Eu: Bom dia\n[00:01:05] Outros: Bom dia, tudo bem?");
+    }
+
+    #[test]
+    fn falas_seguidas_da_mesma_pessoa_viram_um_paragrafo() {
+        let f = |s: &str, t: &str, ts| FalaGravada { speaker: Some(s.into()), text: t.into(), timestamp: ts };
+        let t = formatar_transcricao(&[
+            f("THEY:Ana", "Então, a gente", 0), f("THEY:Ana", "precisa fechar o orçamento", 3000), f("THEY:Ana", " até sexta.", 6000),
+            f("ME", "Combinado.", 9000),
+            f("THEY:Ana", "Outra coisa", 12000), f("THEY:Ana", "depois de muito tempo", 80000),
+        ]);
+        assert_eq!(t, "[00:00:00] Ana: Então, a gente precisa fechar o orçamento até sexta.\n[00:00:09] Eu: Combinado.\n[00:00:12] Ana: Outra coisa\n[00:01:20] Ana: depois de muito tempo");
+        // parágrafo grande demais começa outro
+        let longo = "x".repeat(1000);
+        assert_eq!(agrupar_falas(&[f("ME", &longo, 0), f("ME", &longo, 1000)]).len(), 2);
     }
 
     #[tokio::test]

@@ -1,19 +1,27 @@
+/// Cabeçalho de um WAV PCM 16 bits mono com `amostras` amostras.
+pub fn cabecalho(amostras: u32, taxa: u32) -> [u8; 44] {
+    let bytes = amostras.saturating_mul(2);
+    let mut w = [0u8; 44];
+    let mut put = |i: usize, b: &[u8]| w[i..i + b.len()].copy_from_slice(b);
+    put(0, b"RIFF");
+    put(4, &36u32.saturating_add(bytes).to_le_bytes());
+    put(8, b"WAVEfmt ");
+    put(16, &16u32.to_le_bytes()); // tamanho do bloco fmt
+    put(20, &1u16.to_le_bytes()); // PCM
+    put(22, &1u16.to_le_bytes()); // mono
+    put(24, &taxa.to_le_bytes());
+    put(28, &(taxa * 2).to_le_bytes());
+    put(32, &2u16.to_le_bytes());
+    put(34, &16u16.to_le_bytes());
+    put(36, b"data");
+    put(40, &bytes.to_le_bytes());
+    w
+}
+
 /// Empacota PCM 16 bits mono em um arquivo WAV.
 pub fn pcm16_para_wav(pcm: &[i16], taxa: u32) -> Vec<u8> {
-    let bytes = (pcm.len() * 2) as u32;
     let mut w = Vec::with_capacity(44 + pcm.len() * 2);
-    w.extend_from_slice(b"RIFF");
-    w.extend_from_slice(&(36 + bytes).to_le_bytes());
-    w.extend_from_slice(b"WAVEfmt ");
-    w.extend_from_slice(&16u32.to_le_bytes()); // tamanho do bloco fmt
-    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    w.extend_from_slice(&1u16.to_le_bytes()); // mono
-    w.extend_from_slice(&taxa.to_le_bytes());
-    w.extend_from_slice(&(taxa * 2).to_le_bytes());
-    w.extend_from_slice(&2u16.to_le_bytes());
-    w.extend_from_slice(&16u16.to_le_bytes());
-    w.extend_from_slice(b"data");
-    w.extend_from_slice(&bytes.to_le_bytes());
+    w.extend_from_slice(&cabecalho(pcm.len() as u32, taxa));
     for s in pcm {
         w.extend_from_slice(&s.to_le_bytes());
     }
